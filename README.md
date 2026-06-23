@@ -34,9 +34,4 @@
 
 ### 📁 폴더 구조
 
-\```
-ieumgil/
-├── backend/
-├── frontend/
-└── docs/
-\```
+
