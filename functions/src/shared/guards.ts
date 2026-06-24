@@ -1,4 +1,4 @@
-import {HttpsError} from "firebase-functions/v2/https";
+import {HttpsError, type CallableRequest} from "firebase-functions/v2/https";
 import {UserProfile} from "../types";
 
 /**
@@ -25,3 +25,18 @@ export function assertGuideApproved(user: UserProfile): void {
   }
 }
 
+/**
+ * 운영자 권한 가드. 운영자 전용 callable(admin 모듈)에서 호출한다.
+ * CONTEXT.md: 운영자만 안내자 승인/거부·동네 지식 숨김을 수행할 수 있다.
+ * UserProfile 필드가 아니라 custom claim `admin === true`로 판정한다.
+ *
+ * @param {CallableRequest} auth 호출자 인증 정보(request.auth, 없으면 미인증).
+ */
+export function assertOperator(auth: CallableRequest["auth"]): void {
+  if (!auth) {
+    throw new HttpsError("unauthenticated", "로그인이 필요합니다.");
+  }
+  if (auth.token.admin !== true) {
+    throw new HttpsError("permission-denied", "운영자 권한이 필요합니다.");
+  }
+}
