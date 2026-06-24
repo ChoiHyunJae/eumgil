@@ -7,7 +7,14 @@
  * See a full list of supported triggers at https://firebase.google.com/docs/functions
  */
 
+import * as admin from "firebase-admin";
 import {setGlobalOptions} from "firebase-functions";
+
+// 배포 환경에서 Firestore에 접근하는 모듈(user 등)을 위해 default app을 한 번만 초기화한다.
+// 테스트는 이 파일을 import하지 않고 *.emulator.test.ts에서 직접 admin.initializeApp()을 호출한다.
+if (admin.apps.length === 0) {
+  admin.initializeApp();
+}
 
 // For cost control, you can set the maximum number of containers that can be
 // running at the same time. This helps mitigate the impact of unexpected
