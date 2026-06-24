@@ -14,18 +14,35 @@ import {
 /**
  * admin 모듈 — 운영자 전용 안내자 승인/거부, 신고된 동네 지식 숨김.
  * Slice 5(Issue #7): hideArchiveItem(숨김), rejectGuide(승인 취소) 구현.
- * approveGuide는 안내자 승인 슬라이스 소관이라 이번 범위에서 stub 유지.
+ * Slice 2(Issue #4): approveGuide(안내자 승인) 구현.
  * 운영자 권한은 custom claim(admin=true)으로 검증한다(assertOperator).
  */
 
-/** US#16,#60: 안내자 승인. (승인 슬라이스 소관 — Slice 5 범위 외, stub 유지) */
+/**
+ * US#16,#60 / Slice 2: 운영자가 오프라인 확인을 거친 안내자를 승인한다.
+ * guideApproved를 true로 갱신한다. matchBlockedUntil(매칭 제한)은 독립된
+ * 별도 필드이므로 승인 처리에서 절대 변경하지 않는다(Issue #4 AC, ADR-0001).
+ */
 export const approveGuide = onCall<
   ApproveGuideInput, Promise<ApproveGuideOutput>
->(
-  async () => {
-    throw new Error("not implemented");
+>(async (request) => {
+  assertOperator(request.auth);
+
+  const {userId} = request.data;
+  if (!userId) {
+    throw new HttpsError("invalid-argument", "userId가 필요합니다.");
   }
-);
+
+  const ref = admin.firestore().collection("users").doc(userId);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    throw new HttpsError("not-found", "사용자를 찾을 수 없습니다.");
+  }
+
+  await ref.update({guideApproved: true, updatedAt: Timestamp.now()});
+
+  return {guideApproved: true};
+});
 
 /**
  * US#16,#60 / Slice 5: 운영자가 안내자 승인을 취소한다.
