@@ -11,6 +11,8 @@ functions/node_modules/
 functions/lib/
 .firebase/
 .env
+firestore-debug.log
+ui-debug.log
 
 # IDE
 .vscode/
