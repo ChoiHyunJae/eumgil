@@ -1,10 +1,16 @@
 import * as admin from "firebase-admin";
 import {Timestamp} from "firebase-admin/firestore";
 import type {CallableRequest} from "firebase-functions/v2/https";
-import {approveGuide, hideArchiveItem, rejectGuide} from "../src/admin";
+import {
+  approveGuide,
+  hideArchiveItem,
+  listPendingGuideApplications,
+  rejectGuide,
+} from "../src/admin";
 import type {
   ApproveGuideOutput,
   HideArchiveItemOutput,
+  ListPendingGuideApplicationsOutput,
   RejectGuideOutput,
 } from "../src/admin/types";
 
@@ -146,6 +152,25 @@ describe("admin module", () => {
       createdAt: Timestamp.now(),
       updatedAt: Timestamp.now(),
     });
+  }
+
+  /**
+   * Creates a guideApplications/{auto} doc with status=pending for a user.
+   * @param {string} userId Applicant uid.
+   * @return {Promise<string>} The created application document id.
+   */
+  async function seedPendingApplication(userId: string): Promise<string> {
+    const ref = db.collection("guideApplications").doc();
+    await ref.set({
+      userId,
+      status: "pending",
+      appliedAt: Timestamp.now(),
+      reviewedAt: null,
+      reviewedBy: null,
+      createdAt: Timestamp.now(),
+      updatedAt: Timestamp.now(),
+    });
+    return ref.id;
   }
 
   it("operator can hide archive item", async () => {
@@ -323,6 +348,91 @@ describe("admin module", () => {
       runCallable<RejectGuideOutput>(
         rejectGuide,
         buildRequest(OPERATOR, {userId: "no-such-user"})
+      )
+    ).rejects.toThrow();
+  });
+
+  it("approval syncs the pending application to approved", async () => {
+    const userId = "approve-syncs-app";
+    await seedUnapprovedGuide(userId, null);
+    const appId = await seedPendingApplication(userId);
+
+    await runCallable<ApproveGuideOutput>(
+      approveGuide,
+      buildRequest(OPERATOR, {userId})
+    );
+
+    const appDoc = await db.collection("guideApplications").doc(appId).get();
+    expect(appDoc.data()?.status).toBe("approved");
+    expect(appDoc.data()?.reviewedBy).toBe(OPERATOR.uid);
+    expect(appDoc.data()?.reviewedAt).not.toBeNull();
+  });
+
+  it("approval without a pending application is a no-op", async () => {
+    const userId = "approve-no-app";
+    await seedUnapprovedGuide(userId, null);
+
+    const result = await runCallable<ApproveGuideOutput>(
+      approveGuide,
+      buildRequest(OPERATOR, {userId})
+    );
+    expect(result.guideApproved).toBe(true);
+
+    const snap = await db
+      .collection("guideApplications")
+      .where("userId", "==", userId)
+      .get();
+    expect(snap.empty).toBe(true);
+  });
+
+  it("rejection syncs the pending application to rejected", async () => {
+    const userId = "reject-syncs-app";
+    await seedApprovedGuide(userId);
+    const appId = await seedPendingApplication(userId);
+
+    await runCallable<RejectGuideOutput>(
+      rejectGuide,
+      buildRequest(OPERATOR, {userId})
+    );
+
+    const appDoc = await db.collection("guideApplications").doc(appId).get();
+    expect(appDoc.data()?.status).toBe("rejected");
+    expect(appDoc.data()?.reviewedBy).toBe(OPERATOR.uid);
+    expect(appDoc.data()?.reviewedAt).not.toBeNull();
+  });
+
+  it("operator can list pending guide applications", async () => {
+    const userId = "list-pending-user";
+    await seedPendingApplication(userId);
+
+    const result = await runCallable<ListPendingGuideApplicationsOutput>(
+      listPendingGuideApplications,
+      buildRequest(OPERATOR, {})
+    );
+
+    expect(
+      result.applications.some(
+        (a) => a.userId === userId && a.status === "pending"
+      )
+    ).toBe(true);
+    // Only pending applications are returned.
+    expect(result.applications.every((a) => a.status === "pending")).toBe(true);
+  });
+
+  it("non-operator cannot list pending guide applications", async () => {
+    await expect(
+      runCallable<ListPendingGuideApplicationsOutput>(
+        listPendingGuideApplications,
+        buildRequest(NON_OPERATOR, {})
+      )
+    ).rejects.toThrow();
+  });
+
+  it("unauthenticated cannot list pending applications", async () => {
+    await expect(
+      runCallable<ListPendingGuideApplicationsOutput>(
+        listPendingGuideApplications,
+        buildRequest(undefined, {})
       )
     ).rejects.toThrow();
   });

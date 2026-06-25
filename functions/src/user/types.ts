@@ -1,4 +1,4 @@
-import {EmergencyContact} from "../types";
+import {EmergencyContact, GuideApplicationStatus} from "../types";
 
 /**
  * user 모듈 callable function 계약.
@@ -24,4 +24,15 @@ export interface UpdateEmergencyContactInput {
 }
 export interface UpdateEmergencyContactOutput {
   emergencyContact: EmergencyContact;
+}
+
+/**
+ * US#16,#60 / Slice 2: 사용자가 본인 계정으로 안내자 신청을 제출한다.
+ * 신청 대상은 입력값이 아니라 request.auth.uid에서 가져온다 — 타인 계정으로
+ * 신청할 수 없도록(본인 신청만 허용). 별도 입력 필드는 없다.
+ */
+export type ApplyForGuideInput = Record<string, never>;
+export interface ApplyForGuideOutput {
+  applicationId: string;
+  status: GuideApplicationStatus;
 }
