@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import 'firebase_options.dart';
 import 'screens/admin_approval_screen.dart';
+import 'screens/archive_list_screen.dart';
 import 'screens/guide_status_view.dart';
 
 Future<void> main() async {
@@ -39,6 +40,15 @@ class HomeScreen extends StatelessWidget {
       appBar: AppBar(
         title: const Text('이음길'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.travel_explore),
+            tooltip: '주변 동네 지식',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const ArchiveListScreen(),
+              ),
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.admin_panel_settings),
             tooltip: '운영자: 안내자 신청 승인',
