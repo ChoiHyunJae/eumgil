@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../services/guide_service.dart';
+import 'archive_create_screen.dart';
 
 /// 동네 지식 탭에서 안내자 신청 상태에 따라 UI를 분기하는 위젯.
 ///
@@ -18,9 +19,6 @@ class GuideStatusView extends StatefulWidget {
 }
 
 class _GuideStatusViewState extends State<GuideStatusView> {
-  static const String _registerPlaceholderMessage =
-      '동네 지식 등록 화면은 후속 PR에서 연결됩니다.';
-
   late final GuideService _service;
 
   bool _loading = true;
@@ -77,10 +75,11 @@ class _GuideStatusViewState extends State<GuideStatusView> {
     }
   }
 
-  void _showRegisterPlaceholder() {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text(_registerPlaceholderMessage)));
+  /// 동네 지식 등록 화면으로 이동한다(approved 상태 전용).
+  Future<void> _openArchiveCreate() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const ArchiveCreateScreen()),
+    );
   }
 
   @override
@@ -118,7 +117,7 @@ class _GuideStatusViewState extends State<GuideStatusView> {
         return const Text('신청 대기 중');
       case GuideApplicationViewStatus.approved:
         return ElevatedButton(
-          onPressed: _showRegisterPlaceholder,
+          onPressed: _openArchiveCreate,
           child: const Text('등록하기'),
         );
       case GuideApplicationViewStatus.rejected:
