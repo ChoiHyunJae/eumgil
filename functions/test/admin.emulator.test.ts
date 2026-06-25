@@ -1,8 +1,9 @@
 import * as admin from "firebase-admin";
 import {Timestamp} from "firebase-admin/firestore";
 import type {CallableRequest} from "firebase-functions/v2/https";
-import {hideArchiveItem, rejectGuide} from "../src/admin";
+import {approveGuide, hideArchiveItem, rejectGuide} from "../src/admin";
 import type {
+  ApproveGuideOutput,
   HideArchiveItemOutput,
   RejectGuideOutput,
 } from "../src/admin/types";
@@ -120,6 +121,33 @@ describe("admin module", () => {
     });
   }
 
+  /**
+   * Creates a users/{id} document with guideApproved=false. matchBlockedUntil
+   * is set to a non-null value so approval can be checked not to touch it.
+   * @param {string} id User uid.
+   * @param {Timestamp | null} matchBlockedUntil Initial match-block expiry.
+   * @return {Promise<void>} Resolves once the write completes.
+   */
+  async function seedUnapprovedGuide(
+    id: string,
+    matchBlockedUntil: Timestamp | null
+  ): Promise<void> {
+    await db.collection("users").doc(id).set({
+      phoneNumber: "+821000000000",
+      emergencyContact: {name: "Guardian", phoneNumber: "+821011112222"},
+      guideApproved: false,
+      matchBlockedUntil,
+      noShowCount: 0,
+      guideStats: {
+        averageSatisfaction: null,
+        totalRequestsReceived: 0,
+        completedEscortCount: 0,
+      },
+      createdAt: Timestamp.now(),
+      updatedAt: Timestamp.now(),
+    });
+  }
+
   it("operator can hide archive item", async () => {
     const itemId = "hide-target-item";
     await seedArchiveItem(itemId);
@@ -168,6 +196,85 @@ describe("admin module", () => {
         buildRequest(OPERATOR, {itemId: "no-such-item"})
       )
     ).rejects.toThrow();
+  });
+
+  it("operator can approve guide", async () => {
+    const userId = "approve-target-user";
+    await seedUnapprovedGuide(userId, null);
+
+    const result = await runCallable<ApproveGuideOutput>(
+      approveGuide,
+      buildRequest(OPERATOR, {userId})
+    );
+    expect(result.guideApproved).toBe(true);
+
+    const doc = await db.collection("users").doc(userId).get();
+    expect(doc.data()?.guideApproved).toBe(true);
+  });
+
+  it("approval does not touch matchBlockedUntil", async () => {
+    const userId = "approve-blocked-user";
+    const blockedUntil = Timestamp.fromMillis(Date.now() + 86_400_000);
+    await seedUnapprovedGuide(userId, blockedUntil);
+
+    await runCallable<ApproveGuideOutput>(
+      approveGuide,
+      buildRequest(OPERATOR, {userId})
+    );
+
+    const doc = await db.collection("users").doc(userId).get();
+    expect(doc.data()?.guideApproved).toBe(true);
+    expect(
+      (doc.data()?.matchBlockedUntil as Timestamp).toMillis()
+    ).toBe(blockedUntil.toMillis());
+  });
+
+  it("non-operator cannot approve guide", async () => {
+    const userId = "approve-forbidden-user";
+    await seedUnapprovedGuide(userId, null);
+
+    await expect(
+      runCallable<ApproveGuideOutput>(
+        approveGuide,
+        buildRequest(NON_OPERATOR, {userId})
+      )
+    ).rejects.toThrow();
+
+    const doc = await db.collection("users").doc(userId).get();
+    expect(doc.data()?.guideApproved).toBe(false);
+  });
+
+  it("unauthenticated user cannot approve guide", async () => {
+    const userId = "approve-unauth-user";
+    await seedUnapprovedGuide(userId, null);
+
+    await expect(
+      runCallable<ApproveGuideOutput>(
+        approveGuide,
+        buildRequest(undefined, {userId})
+      )
+    ).rejects.toThrow();
+
+    const doc = await db.collection("users").doc(userId).get();
+    expect(doc.data()?.guideApproved).toBe(false);
+  });
+
+  it("approving missing user rejects", async () => {
+    await expect(
+      runCallable<ApproveGuideOutput>(
+        approveGuide,
+        buildRequest(OPERATOR, {userId: "no-such-user"})
+      )
+    ).rejects.toThrow();
+  });
+
+  it("operator approving without userId rejects", async () => {
+    await expect(
+      runCallable<ApproveGuideOutput>(
+        approveGuide,
+        buildRequest(OPERATOR, {})
+      )
+    ).rejects.toMatchObject({code: "invalid-argument"});
   });
 
   it("operator can reject guide approval", async () => {
