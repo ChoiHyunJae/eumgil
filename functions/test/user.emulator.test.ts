@@ -1,10 +1,17 @@
 import * as admin from "firebase-admin";
 import {Timestamp} from "firebase-admin/firestore";
 import type {CallableRequest} from "firebase-functions/v2/https";
-import {applyForGuide, registerUser, updateEmergencyContact} from "../src/user";
+import {
+  applyForGuide,
+  getMyGuideApplicationStatus,
+  registerUser,
+  updateEmergencyContact,
+} from "../src/user";
 import type {
   ApplyForGuideInput,
   ApplyForGuideOutput,
+  GetMyGuideApplicationStatusInput,
+  GetMyGuideApplicationStatusOutput,
   RegisterUserInput,
   RegisterUserOutput,
   UpdateEmergencyContactInput,
@@ -132,6 +139,68 @@ describe("user module", () => {
       createdAt: Timestamp.now(),
       updatedAt: Timestamp.now(),
     });
+  }
+
+  /**
+   * getMyGuideApplicationStatus 호출용 요청을 만든다. uid가 undefined면 미인증.
+   * @param {string | undefined} uid 호출자 uid(미인증이면 undefined).
+   * @return {CallableRequest<GetMyGuideApplicationStatusInput>} 구성된 요청.
+   */
+  function buildStatusRequest(
+    uid: string | undefined
+  ): CallableRequest<GetMyGuideApplicationStatusInput> {
+    return {
+      data: {},
+      auth: uid === undefined ?
+        undefined :
+        {
+          uid,
+          token: {} as unknown,
+          rawToken: "dummy",
+        } as CallableRequest["auth"],
+      rawRequest: {} as CallableRequest["rawRequest"],
+      acceptsStreaming: false,
+    } as CallableRequest<GetMyGuideApplicationStatusInput>;
+  }
+
+  /**
+   * getMyGuideApplicationStatus v2 onCall 함수를 .run()으로 직접 호출한다.
+   * @param {CallableRequest<GetMyGuideApplicationStatusInput>} request 전달할 요청.
+   * @return {Promise<GetMyGuideApplicationStatusOutput>} 호출 결과.
+   */
+  function runStatus(
+    request: CallableRequest<GetMyGuideApplicationStatusInput>
+  ) {
+    return (getMyGuideApplicationStatus as unknown as {
+      run: (
+        req: CallableRequest<GetMyGuideApplicationStatusInput>
+      ) => Promise<GetMyGuideApplicationStatusOutput>;
+    }).run(request);
+  }
+
+  /**
+   * guideApplications/{auto} 문서를 지정 상태/시각으로 생성한다.
+   * @param {string} userId 신청자 uid.
+   * @param {"pending" | "approved" | "rejected"} status 신청 상태.
+   * @param {Timestamp} updatedAt 최신 판단 기준이 되는 updatedAt.
+   * @return {Promise<string>} 생성된 신청 문서 id.
+   */
+  async function seedApplication(
+    userId: string,
+    status: "pending" | "approved" | "rejected",
+    updatedAt: Timestamp
+  ): Promise<string> {
+    const ref = db.collection("guideApplications").doc();
+    await ref.set({
+      userId,
+      status,
+      appliedAt: Timestamp.now(),
+      reviewedAt: status === "pending" ? null : updatedAt,
+      reviewedBy: status === "pending" ? null : "op-reviewer",
+      createdAt: Timestamp.now(),
+      updatedAt,
+    });
+    return ref.id;
   }
 
   it(
@@ -301,5 +370,86 @@ describe("user module", () => {
       .where("userId", "==", uid)
       .get();
     expect(snap.size).toBe(1);
+  });
+
+  it("인증되지 않은 신청 상태 조회는 거부된다", async () => {
+    await expect(runStatus(buildStatusRequest(undefined))).rejects.toThrow();
+  });
+
+  it("사용자 문서가 없으면 신청 상태 조회는 거부된다", async () => {
+    await expect(
+      runStatus(buildStatusRequest("uid-status-missing"))
+    ).rejects.toMatchObject({code: "not-found"});
+  });
+
+  it("guideApproved=true이면 status approved를 반환한다", async () => {
+    const uid = "uid-status-approved";
+    await seedUser(uid, true);
+
+    const result = await runStatus(buildStatusRequest(uid));
+    expect(result.status).toBe("approved");
+  });
+
+  it("미승인 + pending 신청이 있으면 status pending과 id를 반환한다", async () => {
+    const uid = "uid-status-pending";
+    await seedUser(uid, false);
+    const appId = await seedApplication(uid, "pending", Timestamp.now());
+
+    const result = await runStatus(buildStatusRequest(uid));
+    expect(result.status).toBe("pending");
+    expect(result.applicationId).toBe(appId);
+  });
+
+  it("미승인 + pending이 없고 rejected가 있으면 status rejected", async () => {
+    const uid = "uid-status-rejected";
+    await seedUser(uid, false);
+    const appId = await seedApplication(uid, "rejected", Timestamp.now());
+
+    const result = await runStatus(buildStatusRequest(uid));
+    expect(result.status).toBe("rejected");
+    expect(result.applicationId).toBe(appId);
+  });
+
+  it("미승인 + 신청 이력이 없으면 status none을 반환한다", async () => {
+    const uid = "uid-status-none";
+    await seedUser(uid, false);
+
+    const result = await runStatus(buildStatusRequest(uid));
+    expect(result.status).toBe("none");
+    expect(result.applicationId).toBeUndefined();
+  });
+
+  it("미승인 + approved 신청 이력만 있으면 status approved와 id", async () => {
+    const uid = "uid-status-approved-history";
+    await seedUser(uid, false);
+    const appId = await seedApplication(uid, "approved", Timestamp.now());
+
+    const result = await runStatus(buildStatusRequest(uid));
+    expect(result.status).toBe("approved");
+    expect(result.applicationId).toBe(appId);
+  });
+
+  it("rejected가 여러 건이면 updatedAt 최신 건의 id를 반환한다", async () => {
+    const uid = "uid-status-rejected-multi";
+    await seedUser(uid, false);
+    const older = Timestamp.fromMillis(Date.now() - 86_400_000);
+    const newer = Timestamp.fromMillis(Date.now());
+    await seedApplication(uid, "rejected", older);
+    const latestId = await seedApplication(uid, "rejected", newer);
+
+    const result = await runStatus(buildStatusRequest(uid));
+    expect(result.status).toBe("rejected");
+    expect(result.applicationId).toBe(latestId);
+  });
+
+  it("미승인 + pending과 rejected가 모두 있으면 pending이 우선한다", async () => {
+    const uid = "uid-status-pending-over-rejected";
+    await seedUser(uid, false);
+    await seedApplication(uid, "rejected", Timestamp.now());
+    const pendingId = await seedApplication(uid, "pending", Timestamp.now());
+
+    const result = await runStatus(buildStatusRequest(uid));
+    expect(result.status).toBe("pending");
+    expect(result.applicationId).toBe(pendingId);
   });
 });

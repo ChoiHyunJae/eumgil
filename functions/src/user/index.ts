@@ -10,6 +10,8 @@ import {
 import {
   ApplyForGuideInput,
   ApplyForGuideOutput,
+  GetMyGuideApplicationStatusInput,
+  GetMyGuideApplicationStatusOutput,
   RegisterUserInput,
   RegisterUserOutput,
   UpdateEmergencyContactInput,
@@ -196,4 +198,82 @@ export const applyForGuide = onCall<
   await ref.set(stored);
 
   return {applicationId: ref.id, status: "pending"};
+});
+
+/**
+ * updatedAt이 가장 최신인 신청 문서를 고른다.
+ * approved/rejected 신청이 여러 개 있을 수 있어 최신 항목으로 상태를 판단한다.
+ *
+ * @param {GuideApplication[]} items 비어 있지 않은 신청 목록.
+ * @return {GuideApplication} updatedAt 기준 가장 최신 신청.
+ */
+function latestByUpdatedAt(items: GuideApplication[]): GuideApplication {
+  return items.reduce((latest, item) =>
+    item.updatedAt.toMillis() > latest.updatedAt.toMillis() ? item : latest
+  );
+}
+
+/**
+ * US#16,#60 / Slice 2: 사용자가 본인의 안내자 신청 상태를 조회한다.
+ * 조회 대상은 request.auth.uid이며(본인 조회만 허용), Flutter UI의 신청 버튼
+ * 상태 분기에 사용한다.
+ *
+ * 판단 순서:
+ * 1) users/{uid}.guideApproved === true  → "approved"
+ * 2) 그 외에는 guideApplications에서 본인 신청 이력을 조회해
+ *    pending이 있으면 "pending",
+ *    없고 rejected가 있으면 "rejected",
+ *    없고 approved가 있으면 "approved"(승인 후 별도 경로로 guideApproved가
+ *      내려간 상태에서도 재신청 가능처럼 보이지 않도록),
+ *    신청 이력이 전혀 없으면 "none".
+ * 각 상태가 여러 건이면 updatedAt 최신 건으로 applicationId를 정한다.
+ */
+export const getMyGuideApplicationStatus = onCall<
+  GetMyGuideApplicationStatusInput,
+  Promise<GetMyGuideApplicationStatusOutput>
+>(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "로그인이 필요합니다.");
+  }
+
+  const uid = request.auth.uid;
+  const db = admin.firestore();
+  const userSnap = await db.collection("users").doc(uid).get();
+  if (!userSnap.exists) {
+    throw new HttpsError("not-found", "사용자를 찾을 수 없습니다.");
+  }
+
+  const user = userSnap.data() as Omit<UserProfile, "id">;
+  if (user.guideApproved) {
+    return {status: "approved"};
+  }
+
+  // userId 단일 등식 쿼리로 본인 신청만 조회하고, 최신 판단은 메모리에서 처리한다
+  // (userId + updatedAt 복합 색인 불필요).
+  const snap = await db
+    .collection("guideApplications")
+    .where("userId", "==", uid)
+    .get();
+
+  const applications: GuideApplication[] = snap.docs.map((doc) => ({
+    id: doc.id,
+    ...(doc.data() as Omit<GuideApplication, "id">),
+  }));
+
+  const pending = applications.filter((a) => a.status === "pending");
+  if (pending.length > 0) {
+    return {status: "pending", applicationId: latestByUpdatedAt(pending).id};
+  }
+
+  const rejected = applications.filter((a) => a.status === "rejected");
+  if (rejected.length > 0) {
+    return {status: "rejected", applicationId: latestByUpdatedAt(rejected).id};
+  }
+
+  const approved = applications.filter((a) => a.status === "approved");
+  if (approved.length > 0) {
+    return {status: "approved", applicationId: latestByUpdatedAt(approved).id};
+  }
+
+  return {status: "none"};
 });
