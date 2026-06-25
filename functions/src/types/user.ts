@@ -33,6 +33,12 @@ export interface UserProfile {
   residencyYears?: number;
   /** US#10: 안내자 프로필 서사 — 관심 분야. */
   interests?: string[];
+  /**
+   * US#17~21 / Slice 6: 매칭 후보 검색(searchGuides)에 쓰이는 안내자의 위치 좌표.
+   * null/미존재면 후보 검색에서 제외된다. "현재 위치로 검색" 시점 비교용 스냅샷이며,
+   * 동네 지식의 exactLocation(GeoPoint)과는 무관한 별도 매칭용 위치다.
+   */
+  guideLocation?: {lat: number; lng: number} | null;
   /** US#21,#38,#64: 매칭 후보 정렬 및 KPI 측정에 쓰이는 안내자 통계. */
   guideStats: GuideStats;
   createdAt: Timestamp;
