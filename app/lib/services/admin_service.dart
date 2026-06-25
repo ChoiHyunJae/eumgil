@@ -56,4 +56,19 @@ class AdminService {
     final callable = _fn.httpsCallable('rejectGuide');
     await callable.call<Map<String, dynamic>>({'userId': userId});
   }
+
+  /// 신고된 동네 지식을 숨김 처리한다.
+  ///
+  /// 백엔드는 [itemId](필수)만 사용하며 [reason]은 선택값이다. reason이
+  /// null/빈 문자열이면 요청에서 생략한다. 운영자 권한이 없으면 permission-denied로
+  /// 실패한다(권한 검사는 백엔드 assertOperator에 위임).
+  Future<void> hideArchiveItem({required String itemId, String? reason}) async {
+    final trimmed = reason?.trim();
+    final hasReason = trimmed != null && trimmed.isNotEmpty;
+    final callable = _fn.httpsCallable('hideArchiveItem');
+    await callable.call<Map<String, dynamic>>({
+      'itemId': itemId,
+      'reason': ?(hasReason ? trimmed : null),
+    });
+  }
 }
