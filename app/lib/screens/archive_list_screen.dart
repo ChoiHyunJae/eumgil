@@ -29,6 +29,9 @@ class _ArchiveListScreenState extends State<ArchiveListScreen> {
   Object? _error;
   List<ArchiveItemSummary> _items = const [];
 
+  /// 신고 처리 중인 itemId 집합(중복 클릭 방지 및 버튼 비활성화용).
+  final Set<String> _reporting = <String>{};
+
   @override
   void initState() {
     super.initState();
@@ -164,11 +167,100 @@ class _ArchiveListScreenState extends State<ArchiveListScreen> {
   }
 
   Widget _buildItem(ArchiveItemSummary item) {
+    final reporting = _reporting.contains(item.id);
     return ListTile(
       leading: Chip(label: Text(item.category.label)),
       title: Text(item.body),
       subtitle: item.dongLabel == null ? null : Text(item.dongLabel!),
       isThreeLine: item.dongLabel != null,
+      trailing: reporting
+          ? const SizedBox(
+              width: 24,
+              height: 24,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : IconButton(
+              icon: const Icon(Icons.outlined_flag),
+              tooltip: '신고',
+              onPressed: () => _onReportPressed(item),
+            ),
+    );
+  }
+
+  /// 신고 사유 입력 다이얼로그를 띄우고, 확인 시 신고를 진행한다.
+  Future<void> _onReportPressed(ArchiveItemSummary item) async {
+    final reason = await showDialog<String?>(
+      context: context,
+      builder: (_) => const _ReportReasonDialog(),
+    );
+    // 다이얼로그를 취소하면 null이 반환된다(빈 사유 확인은 빈 문자열).
+    if (reason == null || !mounted) return;
+    await _report(item, reason);
+  }
+
+  /// reportArchiveItem을 호출한다. 동일 itemId의 중복 신고는 무시한다.
+  Future<void> _report(ArchiveItemSummary item, String reason) async {
+    if (_reporting.contains(item.id)) return;
+    setState(() => _reporting.add(item.id));
+    try {
+      await _service.report(itemId: item.id, reason: reason);
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('신고가 접수되었습니다.')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('신고에 실패했습니다: $e')));
+    } finally {
+      if (mounted) {
+        setState(() => _reporting.remove(item.id));
+      }
+    }
+  }
+}
+
+/// 신고 사유(선택)를 입력받는 다이얼로그. "신고"는 입력값을, "취소"는 null을 반환한다.
+class _ReportReasonDialog extends StatefulWidget {
+  const _ReportReasonDialog();
+
+  @override
+  State<_ReportReasonDialog> createState() => _ReportReasonDialogState();
+}
+
+class _ReportReasonDialogState extends State<_ReportReasonDialog> {
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('신고'),
+      content: TextField(
+        controller: _controller,
+        decoration: const InputDecoration(
+          labelText: '신고 사유(선택)',
+          hintText: '신고 사유를 입력하세요.',
+        ),
+        minLines: 2,
+        maxLines: 4,
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('취소'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(_controller.text),
+          child: const Text('신고'),
+        ),
+      ],
     );
   }
 }

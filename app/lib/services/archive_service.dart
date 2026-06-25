@@ -108,4 +108,19 @@ class ArchiveService {
       );
     }).toList();
   }
+
+  /// 동네 지식을 신고한다. 성공 시 누적 신고 수(reportCount)를 반환한다.
+  ///
+  /// 백엔드는 [itemId](필수)만 사용하며 [reason]은 선택값이다. reason이
+  /// null/빈 문자열이면 요청에서 생략한다.
+  Future<int> report({required String itemId, String? reason}) async {
+    final trimmed = reason?.trim();
+    final hasReason = trimmed != null && trimmed.isNotEmpty;
+    final callable = _fn.httpsCallable('reportArchiveItem');
+    final result = await callable.call<Map<String, dynamic>>({
+      'itemId': itemId,
+      'reason': ?(hasReason ? trimmed : null),
+    });
+    return (result.data['reportCount'] as num?)?.toInt() ?? 0;
+  }
 }
