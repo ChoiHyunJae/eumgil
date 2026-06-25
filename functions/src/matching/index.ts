@@ -4,6 +4,8 @@ import {HttpsError, onCall} from "firebase-functions/v2/https";
 import {Escort, EscortStatus, UserProfile} from "../types";
 import {
   GuideCandidate,
+  ListReceivedEscortRequestsInput,
+  ListReceivedEscortRequestsOutput,
   RequestEscortInput,
   RequestEscortOutput,
   RespondToRequestInput,
@@ -308,4 +310,44 @@ export const respondToRequest = onCall<
   });
 
   return {status: "MeetingConfirmed"};
+});
+
+/**
+ * US#24: 안내자(request.auth.uid)가 받은 Requested(미만료) 동행 요청 목록 조회.
+ * guideId == uid 등식 쿼리만 사용하고(복합 색인 불필요), status === "Requested"와
+ * requestExpiresAt > now 만료 필터는 메모리에서 처리한다. requestedAt 오름차순으로
+ * 정렬해 반환하며, Timestamp는 ISO 8601 문자열로 변환한다.
+ */
+export const listReceivedEscortRequests = onCall<
+  ListReceivedEscortRequestsInput,
+  Promise<ListReceivedEscortRequestsOutput>
+>(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "로그인이 필요합니다.");
+  }
+
+  const uid = request.auth.uid;
+  const now = Timestamp.now();
+  const snap = await admin
+    .firestore()
+    .collection("escorts")
+    .where("guideId", "==", uid)
+    .get();
+
+  const requests = snap.docs
+    .map((doc) => ({id: doc.id, ...(doc.data() as Omit<Escort, "id">)}))
+    .filter(
+      (escort) =>
+        escort.status === "Requested" &&
+        escort.requestExpiresAt.toMillis() > now.toMillis()
+    )
+    .sort((a, b) => a.requestedAt.toMillis() - b.requestedAt.toMillis())
+    .map((escort) => ({
+      escortId: escort.id,
+      travelerId: escort.travelerId,
+      requestedAt: escort.requestedAt.toDate().toISOString(),
+      requestExpiresAt: escort.requestExpiresAt.toDate().toISOString(),
+    }));
+
+  return {requests};
 });

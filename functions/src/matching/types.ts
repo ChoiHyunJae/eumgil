@@ -56,3 +56,24 @@ export interface RespondToRequestInput {
 export interface RespondToRequestOutput {
   status: "Accepted" | "Rejected" | "MeetingConfirmed";
 }
+
+/**
+ * US#24: 안내자가 자신에게 들어온 Requested(미만료) 요청 한 건의 요약.
+ * traveler 상세 프로필은 포함하지 않고 travelerId만 노출한다.
+ * Timestamp는 Flutter 파싱 편의를 위해 ISO 8601 문자열로 반환한다.
+ */
+export interface ReceivedEscortRequestSummary {
+  escortId: string;
+  travelerId: string;
+  requestedAt: string;
+  requestExpiresAt: string;
+}
+
+/**
+ * US#24: 안내자(request.auth.uid)가 받은 Requested 요청 목록 조회.
+ * 입력은 없으며 호출자 본인이 guideId인 요청만 대상으로 한다.
+ */
+export type ListReceivedEscortRequestsInput = Record<string, never>;
+export interface ListReceivedEscortRequestsOutput {
+  requests: ReceivedEscortRequestSummary[];
+}

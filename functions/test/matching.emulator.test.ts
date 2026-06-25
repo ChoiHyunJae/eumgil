@@ -1,8 +1,14 @@
 import * as admin from "firebase-admin";
 import {GeoPoint, Timestamp} from "firebase-admin/firestore";
 import type {CallableRequest} from "firebase-functions/v2/https";
-import {requestEscort, respondToRequest, searchGuides} from "../src/matching";
+import {
+  listReceivedEscortRequests,
+  requestEscort,
+  respondToRequest,
+  searchGuides,
+} from "../src/matching";
 import type {
+  ListReceivedEscortRequestsOutput,
   RequestEscortOutput,
   RespondToRequestOutput,
   SearchGuidesOutput,
@@ -126,7 +132,7 @@ describe("matching module", () => {
 
   /**
    * escorts/{auto} 문서를 지정 상태로 만든다.
-   * @param {object} fields 핵심 필드(guideId, travelerId, status, 만료시각).
+   * @param {object} fields 핵심 필드(guideId, travelerId, status, 만료시각, 요청시각).
    * @return {Promise<string>} 생성된 escort 문서 id.
    */
   async function seedEscort(fields: {
@@ -134,14 +140,16 @@ describe("matching module", () => {
     travelerId: string;
     status: string;
     requestExpiresAt: Timestamp;
+    requestedAt?: Timestamp;
   }): Promise<string> {
     const now = Timestamp.now();
+    const requestedAt = fields.requestedAt ?? now;
     const ref = db.collection("escorts").doc();
     await ref.set({
       guideId: fields.guideId,
       travelerId: fields.travelerId,
       status: fields.status,
-      requestedAt: now,
+      requestedAt,
       respondedAt: null,
       requestExpiresAt: fields.requestExpiresAt,
       meetingLocation: null,
@@ -473,5 +481,147 @@ describe("matching module", () => {
         buildRequest(undefined, {escortId: "x", accept: false})
       )
     ).rejects.toThrow();
+  });
+
+  // ---- listReceivedEscortRequests ----
+
+  it("미인증 사용자는 받은 요청 목록을 조회할 수 없다", async () => {
+    await expect(
+      runCallable<ListReceivedEscortRequestsOutput>(
+        listReceivedEscortRequests,
+        buildRequest(undefined, {})
+      )
+    ).rejects.toThrow();
+  });
+
+  it("본인이 guideId인 Requested 요청만 반환한다", async () => {
+    const guide = "lr-guide-self";
+    const escortId = await seedEscort({
+      guideId: guide,
+      travelerId: "lr-traveler-1",
+      status: "Requested",
+      requestExpiresAt: future(),
+    });
+
+    const result = await runCallable<ListReceivedEscortRequestsOutput>(
+      listReceivedEscortRequests,
+      buildRequest(guide, {})
+    );
+    const ids = result.requests.map((r) => r.escortId);
+    expect(ids).toContain(escortId);
+    expect(result.requests.every((r) => r.travelerId === "lr-traveler-1")).toBe(
+      true
+    );
+  });
+
+  it("다른 guideId의 요청은 반환하지 않는다", async () => {
+    const otherEscort = await seedEscort({
+      guideId: "lr-guide-other",
+      travelerId: "lr-traveler-2",
+      status: "Requested",
+      requestExpiresAt: future(),
+    });
+
+    const result = await runCallable<ListReceivedEscortRequestsOutput>(
+      listReceivedEscortRequests,
+      buildRequest("lr-guide-viewer", {})
+    );
+    expect(result.requests.map((r) => r.escortId)).not.toContain(otherEscort);
+  });
+
+  it("Requested가 아닌 요청은 반환하지 않는다", async () => {
+    const guide = "lr-guide-status";
+    const rejected = await seedEscort({
+      guideId: guide,
+      travelerId: "lr-t-rej",
+      status: "Rejected",
+      requestExpiresAt: future(),
+    });
+    const accepted = await seedEscort({
+      guideId: guide,
+      travelerId: "lr-t-acc",
+      status: "Accepted",
+      requestExpiresAt: future(),
+    });
+    const confirmed = await seedEscort({
+      guideId: guide,
+      travelerId: "lr-t-conf",
+      status: "MeetingConfirmed",
+      requestExpiresAt: future(),
+    });
+
+    const result = await runCallable<ListReceivedEscortRequestsOutput>(
+      listReceivedEscortRequests,
+      buildRequest(guide, {})
+    );
+    const ids = result.requests.map((r) => r.escortId);
+    expect(ids).not.toContain(rejected);
+    expect(ids).not.toContain(accepted);
+    expect(ids).not.toContain(confirmed);
+  });
+
+  it("만료된 Requested 요청은 반환하지 않는다", async () => {
+    const guide = "lr-guide-expired";
+    const expired = await seedEscort({
+      guideId: guide,
+      travelerId: "lr-t-exp",
+      status: "Requested",
+      requestExpiresAt: past(),
+    });
+
+    const result = await runCallable<ListReceivedEscortRequestsOutput>(
+      listReceivedEscortRequests,
+      buildRequest(guide, {})
+    );
+    expect(result.requests.map((r) => r.escortId)).not.toContain(expired);
+  });
+
+  it("반환 항목에 escortId/travelerId/요청시각/만료시각이 포함된다", async () => {
+    const guide = "lr-guide-fields";
+    const escortId = await seedEscort({
+      guideId: guide,
+      travelerId: "lr-t-fields",
+      status: "Requested",
+      requestExpiresAt: future(),
+    });
+
+    const result = await runCallable<ListReceivedEscortRequestsOutput>(
+      listReceivedEscortRequests,
+      buildRequest(guide, {})
+    );
+    const item = result.requests.find((r) => r.escortId === escortId);
+    expect(item).toBeDefined();
+    expect(item?.travelerId).toBe("lr-t-fields");
+    expect(typeof item?.requestedAt).toBe("string");
+    expect(typeof item?.requestExpiresAt).toBe("string");
+    expect(Number.isNaN(Date.parse(item?.requestedAt ?? ""))).toBe(false);
+    expect(Number.isNaN(Date.parse(item?.requestExpiresAt ?? ""))).toBe(false);
+  });
+
+  it("requestedAt 오름차순 정렬이 유지된다", async () => {
+    const guide = "lr-guide-sort";
+    const older = Timestamp.fromMillis(Date.now() - 3 * 60 * 1000);
+    const newer = Timestamp.fromMillis(Date.now() - 1 * 60 * 1000);
+    const newerId = await seedEscort({
+      guideId: guide,
+      travelerId: "lr-t-newer",
+      status: "Requested",
+      requestExpiresAt: future(),
+      requestedAt: newer,
+    });
+    const olderId = await seedEscort({
+      guideId: guide,
+      travelerId: "lr-t-older",
+      status: "Requested",
+      requestExpiresAt: future(),
+      requestedAt: older,
+    });
+
+    const result = await runCallable<ListReceivedEscortRequestsOutput>(
+      listReceivedEscortRequests,
+      buildRequest(guide, {})
+    );
+    const ids = result.requests.map((r) => r.escortId);
+    expect(ids.indexOf(olderId)).toBeLessThan(ids.indexOf(newerId));
   });
 });
