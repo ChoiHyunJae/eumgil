@@ -2,6 +2,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
 import 'firebase_options.dart';
+import 'screens/admin_approval_screen.dart';
 import 'screens/guide_status_view.dart';
 
 Future<void> main() async {
@@ -35,7 +36,20 @@ class HomeScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('이음길')),
+      appBar: AppBar(
+        title: const Text('이음길'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.admin_panel_settings),
+            tooltip: '운영자: 안내자 신청 승인',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const AdminApprovalScreen(),
+              ),
+            ),
+          ),
+        ],
+      ),
       body: const GuideStatusView(),
     );
   }
