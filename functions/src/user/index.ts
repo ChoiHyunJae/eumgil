@@ -1,8 +1,15 @@
 import * as admin from "firebase-admin";
-import {FieldValue} from "firebase-admin/firestore";
+import {FieldValue, Timestamp} from "firebase-admin/firestore";
 import {HttpsError, onCall} from "firebase-functions/v2/https";
-import {EmergencyContact, GuideStats, UserProfile} from "../types";
 import {
+  EmergencyContact,
+  GuideApplication,
+  GuideStats,
+  UserProfile,
+} from "../types";
+import {
+  ApplyForGuideInput,
+  ApplyForGuideOutput,
   RegisterUserInput,
   RegisterUserOutput,
   UpdateEmergencyContactInput,
@@ -129,4 +136,64 @@ export const updateEmergencyContact = onCall<
   });
 
   return {emergencyContact: request.data.emergencyContact};
+});
+
+/**
+ * US#16,#60 / Slice 2: 사용자가 본인 계정으로 안내자 신청을 제출한다.
+ * 신청 대상은 request.auth.uid이며(본인 신청만 허용), guideApplications에
+ * status="pending" 문서를 생성한다. 운영자가 오프라인 확인 후 승인/거부한다.
+ *
+ * 이미 승인된 안내자(guideApproved=true)는 신청할 수 없고(failed-precondition),
+ * 이미 처리 대기 중인 pending 신청이 있으면 중복 신청할 수 없다(already-exists).
+ */
+export const applyForGuide = onCall<
+  ApplyForGuideInput, Promise<ApplyForGuideOutput>
+>(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "로그인이 필요합니다.");
+  }
+
+  const uid = request.auth.uid;
+  const db = admin.firestore();
+  const userRef = db.collection("users").doc(uid);
+  const userSnap = await userRef.get();
+  if (!userSnap.exists) {
+    throw new HttpsError("not-found", "사용자를 찾을 수 없습니다.");
+  }
+
+  const user = userSnap.data() as Omit<UserProfile, "id">;
+  if (user.guideApproved) {
+    throw new HttpsError(
+      "failed-precondition",
+      "이미 안내자로 승인된 사용자입니다."
+    );
+  }
+
+  const applicationsRef = db.collection("guideApplications");
+  const pending = await applicationsRef
+    .where("userId", "==", uid)
+    .where("status", "==", "pending")
+    .limit(1)
+    .get();
+  if (!pending.empty) {
+    throw new HttpsError(
+      "already-exists",
+      "이미 처리 대기 중인 안내자 신청이 있습니다."
+    );
+  }
+
+  const ref = applicationsRef.doc();
+  const now = Timestamp.now();
+  const stored: Omit<GuideApplication, "id"> = {
+    userId: uid,
+    status: "pending",
+    appliedAt: now,
+    reviewedAt: null,
+    reviewedBy: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await ref.set(stored);
+
+  return {applicationId: ref.id, status: "pending"};
 });

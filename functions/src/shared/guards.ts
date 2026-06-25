@@ -32,7 +32,9 @@ export function assertGuideApproved(user: UserProfile): void {
  *
  * @param {CallableRequest} auth 호출자 인증 정보(request.auth, 없으면 미인증).
  */
-export function assertOperator(auth: CallableRequest["auth"]): void {
+export function assertOperator(
+  auth: CallableRequest["auth"]
+): asserts auth is NonNullable<CallableRequest["auth"]> {
   if (!auth) {
     throw new HttpsError("unauthenticated", "로그인이 필요합니다.");
   }

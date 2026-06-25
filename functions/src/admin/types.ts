@@ -4,6 +4,8 @@
  * (1차 포함, 일정에 따라 축소·연기 가능). Flutter 앱과 별개로 운영자 전용 웹 페이지에서 호출.
  */
 
+import {GuideApplication} from "../types";
+
 /**
  * US#16,#60: 복지관·주민센터의 오프라인 확인을 거친 뒤 운영자가 안내자 승인.
  * Invariant: guideApproved는 matchBlockedUntil과 독립된 별도 필드로 갱신.
@@ -31,4 +33,13 @@ export interface HideArchiveItemInput {
 }
 export interface HideArchiveItemOutput {
   hidden: true;
+}
+
+/**
+ * US#16,#60 / Slice 2: 운영자가 처리 대기 중인(pending) 안내자 신청 목록을 조회.
+ * 별도 입력 필드는 없다. 운영자 권한(assertOperator)으로만 호출 가능.
+ */
+export type ListPendingGuideApplicationsInput = Record<string, never>;
+export interface ListPendingGuideApplicationsOutput {
+  applications: GuideApplication[];
 }

@@ -1,7 +1,10 @@
 import * as admin from "firebase-admin";
+import {Timestamp} from "firebase-admin/firestore";
 import type {CallableRequest} from "firebase-functions/v2/https";
-import {registerUser, updateEmergencyContact} from "../src/user";
+import {applyForGuide, registerUser, updateEmergencyContact} from "../src/user";
 import type {
+  ApplyForGuideInput,
+  ApplyForGuideOutput,
   RegisterUserInput,
   RegisterUserOutput,
   UpdateEmergencyContactInput,
@@ -67,6 +70,68 @@ describe("user module", () => {
         req: CallableRequest<UpdateEmergencyContactInput>
       ) => Promise<UpdateEmergencyContactOutput>;
     }).run(request);
+  }
+
+  /**
+   * applyForGuide 호출용 요청을 만든다. uid가 undefined면 미인증 요청.
+   * applyForGuide는 phone_number 토큰을 요구하지 않고 auth.uid만 사용한다.
+   * @param {string | undefined} uid 호출자 uid(미인증이면 undefined).
+   * @return {CallableRequest<ApplyForGuideInput>} 구성된 요청.
+   */
+  function buildApplyRequest(
+    uid: string | undefined
+  ): CallableRequest<ApplyForGuideInput> {
+    return {
+      data: {},
+      auth: uid === undefined ?
+        undefined :
+        {
+          uid,
+          token: {} as unknown,
+          rawToken: "dummy",
+        } as CallableRequest["auth"],
+      rawRequest: {} as CallableRequest["rawRequest"],
+      acceptsStreaming: false,
+    } as CallableRequest<ApplyForGuideInput>;
+  }
+
+  /**
+   * applyForGuide v2 onCall 함수를 .run()으로 직접 호출한다.
+   * @param {CallableRequest<ApplyForGuideInput>} request 전달할 요청.
+   * @return {Promise<ApplyForGuideOutput>} 호출 결과.
+   */
+  function runApply(request: CallableRequest<ApplyForGuideInput>) {
+    return (applyForGuide as unknown as {
+      run: (
+        req: CallableRequest<ApplyForGuideInput>
+      ) => Promise<ApplyForGuideOutput>;
+    }).run(request);
+  }
+
+  /**
+   * users/{uid} 문서를 생성한다(applyForGuide 사전 조건용).
+   * @param {string} uid 사용자 uid.
+   * @param {boolean} guideApproved 안내자 승인 여부.
+   * @return {Promise<void>} 쓰기 완료 시 resolve.
+   */
+  async function seedUser(
+    uid: string,
+    guideApproved: boolean
+  ): Promise<void> {
+    await db.collection("users").doc(uid).set({
+      phoneNumber: "+821000000000",
+      emergencyContact: {name: "보호자", phoneNumber: "+821011112222"},
+      guideApproved,
+      matchBlockedUntil: null,
+      noShowCount: 0,
+      guideStats: {
+        averageSatisfaction: null,
+        totalRequestsReceived: 0,
+        completedEscortCount: 0,
+      },
+      createdAt: Timestamp.now(),
+      updatedAt: Timestamp.now(),
+    });
   }
 
   it(
@@ -174,5 +239,67 @@ describe("user module", () => {
     await expect(
       runUpdate(request as CallableRequest<UpdateEmergencyContactInput>)
     ).rejects.toThrow();
+  });
+
+  it("미승인 사용자가 신청하면 pending 신청 문서가 생성된다", async () => {
+    const uid = "uid-apply-1";
+    await seedUser(uid, false);
+
+    const result = await runApply(buildApplyRequest(uid));
+    expect(result.status).toBe("pending");
+    expect(typeof result.applicationId).toBe("string");
+
+    const doc = await db
+      .collection("guideApplications")
+      .doc(result.applicationId)
+      .get();
+    expect(doc.exists).toBe(true);
+    const data = doc.data();
+    expect(data?.userId).toBe(uid);
+    expect(data?.status).toBe("pending");
+    expect(data?.reviewedAt).toBeNull();
+    expect(data?.reviewedBy).toBeNull();
+  });
+
+  it("인증되지 않은 안내자 신청은 거부된다", async () => {
+    await expect(runApply(buildApplyRequest(undefined))).rejects.toThrow();
+  });
+
+  it("사용자 문서가 없으면 안내자 신청은 거부된다", async () => {
+    await expect(
+      runApply(buildApplyRequest("uid-apply-missing"))
+    ).rejects.toThrow();
+  });
+
+  it("이미 승인된 안내자는 신청할 수 없다", async () => {
+    const uid = "uid-apply-approved";
+    await seedUser(uid, true);
+
+    await expect(
+      runApply(buildApplyRequest(uid))
+    ).rejects.toMatchObject({code: "failed-precondition"});
+
+    const snap = await db
+      .collection("guideApplications")
+      .where("userId", "==", uid)
+      .get();
+    expect(snap.empty).toBe(true);
+  });
+
+  it("이미 pending 신청이 있으면 중복 신청할 수 없다", async () => {
+    const uid = "uid-apply-dup";
+    await seedUser(uid, false);
+
+    await runApply(buildApplyRequest(uid));
+
+    await expect(
+      runApply(buildApplyRequest(uid))
+    ).rejects.toMatchObject({code: "already-exists"});
+
+    const snap = await db
+      .collection("guideApplications")
+      .where("userId", "==", uid)
+      .get();
+    expect(snap.size).toBe(1);
   });
 });
