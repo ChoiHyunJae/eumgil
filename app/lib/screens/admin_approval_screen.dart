@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../services/admin_service.dart';
+import 'archive_hide_screen.dart';
 
 /// 운영자가 pending 안내자 신청을 조회·승인·거절하는 최소 관리자 화면.
 ///
@@ -91,6 +92,15 @@ class _AdminApprovalScreenState extends State<AdminApprovalScreen> {
       appBar: AppBar(
         title: const Text('안내자 신청 승인'),
         actions: [
+          IconButton(
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const ArchiveHideScreen(),
+              ),
+            ),
+            icon: const Icon(Icons.visibility_off),
+            tooltip: '동네 지식 숨김 처리',
+          ),
           IconButton(
             onPressed: _loading ? null : _load,
             icon: const Icon(Icons.refresh),
