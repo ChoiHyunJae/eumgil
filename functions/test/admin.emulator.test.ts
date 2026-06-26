@@ -436,4 +436,101 @@ describe("admin module", () => {
       )
     ).rejects.toThrow();
   });
+
+  // ─── Slice 13: 안내자 자격 상실 시 소모임 자동 해산 ──────────────
+
+  /**
+   * groups/{id} 문서를 직접 생성하는 시드 헬퍼.
+   * @param {string} groupId 문서 id.
+   * @param {string} guideId 개설 안내자 uid.
+   * @param {string[]} memberIds 전체 멤버 uid(안내자 포함).
+   * @return {Promise<void>}
+   */
+  async function seedGroup(
+    groupId: string,
+    guideId: string,
+    memberIds: string[]
+  ): Promise<void> {
+    await db.collection("groups").doc(groupId).set({
+      guideId,
+      memberIds,
+      frequency: "WEEKLY",
+      timeOfDay: "MORNING",
+      kakaoOpenChatUrl: null,
+      pendingInvites: [],
+      dissolved: false,
+      dissolvedReason: null,
+      dissolvedAt: null,
+      createdAt: Timestamp.now(),
+      updatedAt: Timestamp.now(),
+    });
+  }
+
+  it("안내자 승인 취소 시 해당 안내자가 개설한 비해산 소모임이 모두 해산된다", async () => {
+    const guideId = "cascade-guide-1";
+    await seedApprovedGuide(guideId);
+    await seedGroup("cascade-group-1", guideId, [guideId, "traveler-a"]);
+    await seedGroup("cascade-group-2", guideId, [guideId, "traveler-b", "traveler-c"]);
+
+    await runCallable<RejectGuideOutput>(
+      rejectGuide,
+      buildRequest(OPERATOR, {userId: guideId})
+    );
+
+    const g1 = await db.collection("groups").doc("cascade-group-1").get();
+    const g2 = await db.collection("groups").doc("cascade-group-2").get();
+
+    expect(g1.data()?.dissolved).toBe(true);
+    expect(g1.data()?.dissolvedReason).toBe("guide_unapproved");
+    expect(g1.data()?.dissolvedAt).not.toBeNull();
+
+    expect(g2.data()?.dissolved).toBe(true);
+    expect(g2.data()?.dissolvedReason).toBe("guide_unapproved");
+  });
+
+  it("이미 해산된 소모임은 다시 건드리지 않는다", async () => {
+    const guideId = "cascade-guide-2";
+    await seedApprovedGuide(guideId);
+    await seedGroup("cascade-already-dissolved", guideId, [guideId]);
+    await db.collection("groups").doc("cascade-already-dissolved").update({
+      dissolved: true,
+      dissolvedReason: "manual",
+      dissolvedAt: Timestamp.now(),
+    });
+
+    await runCallable<RejectGuideOutput>(
+      rejectGuide,
+      buildRequest(OPERATOR, {userId: guideId})
+    );
+
+    const doc = await db.collection("groups").doc("cascade-already-dissolved").get();
+    // dissolvedReason이 manual 그대로여야 한다(덮어쓰지 않음)
+    expect(doc.data()?.dissolvedReason).toBe("manual");
+  });
+
+  it("다른 안내자의 소모임은 해산되지 않는다", async () => {
+    const guideId = "cascade-guide-3";
+    const otherGuideId = "other-guide-unaffected";
+    await seedApprovedGuide(guideId);
+    await seedGroup("other-guide-group", otherGuideId, [otherGuideId, "traveler-x"]);
+
+    await runCallable<RejectGuideOutput>(
+      rejectGuide,
+      buildRequest(OPERATOR, {userId: guideId})
+    );
+
+    const doc = await db.collection("groups").doc("other-guide-group").get();
+    expect(doc.data()?.dissolved).toBe(false);
+  });
+
+  it("소모임이 없는 안내자 승인 취소는 정상 처리된다", async () => {
+    const guideId = "cascade-guide-no-groups";
+    await seedApprovedGuide(guideId);
+
+    const result = await runCallable<RejectGuideOutput>(
+      rejectGuide,
+      buildRequest(OPERATOR, {userId: guideId})
+    );
+    expect(result.guideApproved).toBe(false);
+  });
 });
