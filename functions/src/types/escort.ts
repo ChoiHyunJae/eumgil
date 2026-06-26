@@ -57,6 +57,8 @@ export interface Escort {
   /** US#34: InProgress 중 응급 상황 등으로 중도 종료. */
   midTerminatedBy: EscortParty | null;
   midTerminatedAt: Timestamp | null;
+  /** US#34: 중도 종료 사유(선택, 최대 500자). 미입력이면 null. */
+  midTerminateReason?: string | null;
   /**
    * US#35: 양쪽이 각자 "동행 종료"를 눌러야 Completed.
    * 한쪽만 누른 뒤 24시간 경과 시 스케줄러(scheduled/autoCompleteEscort)가 자동 Completed 처리.

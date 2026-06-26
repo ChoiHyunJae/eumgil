@@ -46,7 +46,9 @@ describe("Slice 0 test harness", () => {
     expect(snapshot.data()?.pong).toBe(true);
   });
 
-  it("escort 모듈의 callable stub을 직접 호출하면 not implemented를 던진다", async () => {
+  it("escort 모듈의 callable을 .run()으로 직접 호출할 수 있다", async () => {
+    // Slice 7 완료로 escort callable에 더 이상 stub이 없으므로, 하니스 전제(.run
+    // 직접 호출 가능)는 미인증 호출이 unauthenticated로 거부되는 것으로 확인한다.
     const request = {
       data: {escortId: "dummy"},
       rawRequest: {} as CallableRequest<MidTerminateInput>["rawRequest"],
@@ -58,6 +60,6 @@ describe("Slice 0 test harness", () => {
           req: CallableRequest<MidTerminateInput>
         ) => Promise<MidTerminateOutput>;
       }).run(request)
-    ).rejects.toThrow("not implemented");
+    ).rejects.toThrow("로그인이 필요합니다.");
   });
 });

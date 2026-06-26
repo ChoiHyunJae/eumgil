@@ -11,9 +11,35 @@ class _FakeEscortService extends EscortService {
   final List<String> cancelled = [];
   final List<String> confirmed = [];
   final List<String> judged = [];
+  final List<String> completed = [];
+  final List<String> midTerminated = [];
+  int listCallCount = 0;
 
   @override
-  Future<List<MyEscortSummary>> listMyEscorts() async => _items;
+  Future<List<MyEscortSummary>> listMyEscorts() async {
+    listCallCount += 1;
+    return _items;
+  }
+
+  @override
+  Future<String> completeEscort({
+    required String escortId,
+    int? satisfactionRating,
+  }) async {
+    completed.add(escortId);
+    _items = _items.where((e) => e.escortId != escortId).toList();
+    return 'Completed';
+  }
+
+  @override
+  Future<String> midTerminate({
+    required String escortId,
+    String? reason,
+  }) async {
+    midTerminated.add(escortId);
+    _items = _items.where((e) => e.escortId != escortId).toList();
+    return 'MidTerminated';
+  }
 
   @override
   Future<void> judgeNoShow({required String escortId}) async {
@@ -160,5 +186,105 @@ void main() {
 
     expect(fake.judged, contains('esc-1'));
     expect(find.text('진행 중인 동행이 없습니다.'), findsOneWidget);
+  });
+
+  testWidgets('InProgress 카드에 동행 완료/중도 종료 버튼이 표시된다', (tester) async {
+    final fake = _FakeEscortService([
+      const MyEscortSummary(
+        escortId: 'esc-1',
+        guideId: 'guide-1',
+        travelerId: 'traveler-1',
+        status: 'InProgress',
+      ),
+    ]);
+
+    await tester.pumpWidget(
+      MaterialApp(home: MyEscortScreen(service: fake)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('동행 완료'), findsOneWidget);
+    expect(find.text('중도 종료'), findsOneWidget);
+  });
+
+  testWidgets('동행 완료 버튼 클릭 시 completeEscort 호출 후 목록 갱신(guide)', (tester) async {
+    final fake = _FakeEscortService([
+      const MyEscortSummary(
+        escortId: 'esc-1',
+        guideId: 'guide-1',
+        travelerId: 'traveler-1',
+        status: 'InProgress',
+      ),
+    ]);
+
+    // currentUserId 미지정 → guide 경로(다이얼로그 없이 바로 호출).
+    await tester.pumpWidget(
+      MaterialApp(home: MyEscortScreen(service: fake)),
+    );
+    await tester.pumpAndSettle();
+    final loadsBefore = fake.listCallCount;
+
+    await tester.tap(find.text('동행 완료'));
+    await tester.pumpAndSettle();
+
+    expect(fake.completed, contains('esc-1'));
+    expect(fake.listCallCount, greaterThan(loadsBefore)); // 목록 새로고침
+    expect(find.text('진행 중인 동행이 없습니다.'), findsOneWidget);
+  });
+
+  testWidgets('중도 종료 버튼 클릭 → 사유 다이얼로그 → midTerminate 호출 후 갱신', (
+    tester,
+  ) async {
+    final fake = _FakeEscortService([
+      const MyEscortSummary(
+        escortId: 'esc-1',
+        guideId: 'guide-1',
+        travelerId: 'traveler-1',
+        status: 'InProgress',
+      ),
+    ]);
+
+    await tester.pumpWidget(
+      MaterialApp(home: MyEscortScreen(service: fake)),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('중도 종료'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('사유(선택)'), findsOneWidget);
+    await tester.tap(find.text('확인'));
+    await tester.pumpAndSettle();
+
+    expect(fake.midTerminated, contains('esc-1'));
+    expect(find.text('진행 중인 동행이 없습니다.'), findsOneWidget);
+  });
+
+  testWidgets('traveler는 동행 완료 시 만족도 다이얼로그가 뜬다', (tester) async {
+    final fake = _FakeEscortService([
+      const MyEscortSummary(
+        escortId: 'esc-1',
+        guideId: 'guide-1',
+        travelerId: 'traveler-1',
+        status: 'InProgress',
+      ),
+    ]);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MyEscortScreen(service: fake, currentUserId: 'traveler-1'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('동행 완료'));
+    await tester.pumpAndSettle();
+
+    // traveler 경로 → 만족도 다이얼로그 표시.
+    expect(find.text('만족도 평가(선택)'), findsOneWidget);
+    await tester.tap(find.text('완료'));
+    await tester.pumpAndSettle();
+
+    expect(fake.completed, contains('esc-1'));
   });
 }

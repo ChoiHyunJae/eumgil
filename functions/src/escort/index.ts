@@ -417,23 +417,158 @@ export const cancelEscort = onCall<
   });
 });
 
-/** US#34: InProgress 중 중도 종료. 소모임 카운트에서 제외(group-suggestion 모듈 규칙). */
-export const midTerminate = onCall<
-  MidTerminateInput, Promise<MidTerminateOutput>
->(
-  async () => {
-    throw new Error("not implemented");
-  }
-);
+/** 중도 종료 사유 최대 길이. */
+const MID_TERMINATE_REASON_MAX = 500;
 
 /**
- * US#35,#38: 각자 "동행 종료" 확인 → 양쪽 모두 누르면 Completed.
- * 24시간 내 상대방 미확인 시 자동 완료는 scheduled/autoCompleteEscort가 처리.
+ * US#34 / Slice 7: InProgress 동행을 중도 종료(InProgress → MidTerminated).
+ * 당사자만 호출할 수 있고 InProgress 상태에서만 허용한다. reason은 선택이며
+ * 500자 이하 문자열만 허용한다. 중도 종료는 패널티가 없다(노쇼 카운터 미변경).
+ */
+export const midTerminate = onCall<
+  MidTerminateInput, Promise<MidTerminateOutput>
+>(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "로그인이 필요합니다.");
+  }
+  const {escortId, reason} = request.data;
+  if (!escortId) {
+    throw new HttpsError("invalid-argument", "escortId가 필요합니다.");
+  }
+  if (reason !== undefined) {
+    if (typeof reason !== "string") {
+      throw new HttpsError("invalid-argument", "reason은 문자열이어야 합니다.");
+    }
+    if (reason.length > MID_TERMINATE_REASON_MAX) {
+      throw new HttpsError(
+        "invalid-argument",
+        "reason은 500자 이하여야 합니다."
+      );
+    }
+  }
+
+  const uid = request.auth.uid;
+  const ref = admin.firestore().collection("escorts").doc(escortId);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    throw new HttpsError("not-found", "동행을 찾을 수 없습니다.");
+  }
+  const escort = snap.data() as Omit<Escort, "id">;
+  let party: EscortParty;
+  if (escort.guideId === uid) {
+    party = "guide";
+  } else if (escort.travelerId === uid) {
+    party = "traveler";
+  } else {
+    throw new HttpsError(
+      "permission-denied",
+      "본인이 참여한 동행만 중도 종료할 수 있습니다."
+    );
+  }
+  if (escort.status !== "InProgress") {
+    throw new HttpsError(
+      "failed-precondition",
+      "진행 중인 동행만 중도 종료할 수 있습니다."
+    );
+  }
+
+  const now = Timestamp.now();
+  await ref.update({
+    status: "MidTerminated",
+    midTerminatedBy: party,
+    midTerminatedAt: now,
+    midTerminateReason: reason ?? null,
+    updatedAt: now,
+  });
+
+  return {status: "MidTerminated"};
+});
+
+/**
+ * US#35,#38 / Slice 7: 각자 "동행 종료" 확인 → 양쪽 모두 누르면 Completed.
+ * 당사자만 호출하고 InProgress 상태에서만 허용한다. guide/traveler 각자의 완료
+ * 시각을 기록하며, 둘 다 채워지면 Completed로 전환한다(한쪽만이면 InProgress 유지).
+ * satisfactionRating은 traveler만 1~5 정수로 제출할 수 있다(guide가 보내면 거부).
+ * 24시간 미확인 자동 완료(scheduled/autoCompleteEscort)와 달리 직접 완료 흐름이며,
+ * 둘 다 InProgress에서만 동작하므로 충돌하지 않는다.
  */
 export const completeEscort = onCall<
   CompleteEscortInput, Promise<CompleteEscortOutput>
->(
-  async () => {
-    throw new Error("not implemented");
+>(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "로그인이 필요합니다.");
   }
-);
+  const {escortId, satisfactionRating} = request.data;
+  if (!escortId) {
+    throw new HttpsError("invalid-argument", "escortId가 필요합니다.");
+  }
+
+  const uid = request.auth.uid;
+  const ref = admin.firestore().collection("escorts").doc(escortId);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    throw new HttpsError("not-found", "동행을 찾을 수 없습니다.");
+  }
+  const escort = snap.data() as Omit<Escort, "id">;
+  let party: EscortParty;
+  if (escort.guideId === uid) {
+    party = "guide";
+  } else if (escort.travelerId === uid) {
+    party = "traveler";
+  } else {
+    throw new HttpsError(
+      "permission-denied",
+      "본인이 참여한 동행만 완료할 수 있습니다."
+    );
+  }
+  if (escort.status !== "InProgress") {
+    throw new HttpsError(
+      "failed-precondition",
+      "진행 중인 동행만 완료할 수 있습니다."
+    );
+  }
+
+  if (satisfactionRating !== undefined) {
+    if (party !== "traveler") {
+      throw new HttpsError(
+        "permission-denied",
+        "만족도 평가는 탐방자만 제출할 수 있습니다."
+      );
+    }
+    if (
+      typeof satisfactionRating !== "number" ||
+      !Number.isInteger(satisfactionRating) ||
+      satisfactionRating < 1 ||
+      satisfactionRating > 5
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "만족도 평가는 1~5 정수여야 합니다."
+      );
+    }
+  }
+
+  const now = Timestamp.now();
+  const guideCompletedAt =
+    party === "guide" ? now : escort.guideCompletedAt;
+  const travelerCompletedAt =
+    party === "traveler" ? now : escort.travelerCompletedAt;
+  const bothCompleted =
+    guideCompletedAt != null && travelerCompletedAt != null;
+  const status: CompleteEscortOutput["status"] = bothCompleted ?
+    "Completed" :
+    "InProgress";
+
+  const updates: Record<string, unknown> = {status, updatedAt: now};
+  if (party === "guide") {
+    updates.guideCompletedAt = now;
+  } else {
+    updates.travelerCompletedAt = now;
+  }
+  if (satisfactionRating !== undefined) {
+    updates.satisfactionRating = satisfactionRating;
+  }
+  await ref.update(updates);
+
+  return {status};
+});

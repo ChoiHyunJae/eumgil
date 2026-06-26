@@ -4,16 +4,20 @@ import type {CallableRequest} from "firebase-functions/v2/https";
 import {
   cancelEscort,
   checkArrival,
+  completeEscort,
   confirmMeeting,
   judgeEscortNoShow,
   listMyEscorts,
+  midTerminate,
 } from "../src/escort";
 import type {
   CancelEscortOutput,
   CheckArrivalOutput,
+  CompleteEscortOutput,
   ConfirmMeetingOutput,
   JudgeNoShowOutput,
   ListMyEscortsOutput,
+  MidTerminateOutput,
 } from "../src/escort/types";
 
 /**
@@ -90,6 +94,8 @@ describe("escort module", () => {
     requestedAt?: Timestamp;
     guideArrivalConfirmedAt?: Timestamp | null;
     travelerArrivalConfirmedAt?: Timestamp | null;
+    guideCompletedAt?: Timestamp | null;
+    travelerCompletedAt?: Timestamp | null;
   }): Promise<string> {
     const now = Timestamp.now();
     const ref = db.collection("escorts").doc();
@@ -110,8 +116,8 @@ describe("escort module", () => {
       travelerArrivalConfirmedAt: fields.travelerArrivalConfirmedAt ?? null,
       midTerminatedBy: null,
       midTerminatedAt: null,
-      guideCompletedAt: null,
-      travelerCompletedAt: null,
+      guideCompletedAt: fields.guideCompletedAt ?? null,
+      travelerCompletedAt: fields.travelerCompletedAt ?? null,
       satisfactionRating: null,
       createdAt: now,
       updatedAt: now,
@@ -700,5 +706,293 @@ describe("escort module", () => {
     const g = (await db.collection("users").doc("cp-block-g").get()).data();
     expect(g?.noShowCount).toBe(3);
     expect(g?.matchBlockedUntil).not.toBeNull();
+  });
+
+  // ---- midTerminate ----
+
+  it("미인증 사용자는 중도 종료할 수 없다", async () => {
+    const id = await seedEscort({
+      guideId: "mt-g",
+      travelerId: "mt-t",
+      status: "InProgress",
+    });
+    await expect(
+      runCallable<MidTerminateOutput>(
+        midTerminate,
+        buildRequest(undefined, {escortId: id})
+      )
+    ).rejects.toThrow();
+  });
+
+  it("당사자가 아니면 중도 종료할 수 없다", async () => {
+    const id = await seedEscort({
+      guideId: "mt-perm-g",
+      travelerId: "mt-perm-t",
+      status: "InProgress",
+    });
+    await expect(
+      runCallable<MidTerminateOutput>(
+        midTerminate,
+        buildRequest("mt-stranger", {escortId: id})
+      )
+    ).rejects.toMatchObject({code: "permission-denied"});
+  });
+
+  it("InProgress가 아니면 중도 종료할 수 없다", async () => {
+    const id = await seedEscort({
+      guideId: "mt-st-g",
+      travelerId: "mt-st-t",
+      status: "MeetingConfirmed",
+    });
+    await expect(
+      runCallable<MidTerminateOutput>(
+        midTerminate,
+        buildRequest("mt-st-g", {escortId: id})
+      )
+    ).rejects.toMatchObject({code: "failed-precondition"});
+  });
+
+  it("guide 중도 종료 → MidTerminated + midTerminatedBy=guide", async () => {
+    const id = await seedEscort({
+      guideId: "mt-guide-g",
+      travelerId: "mt-guide-t",
+      status: "InProgress",
+    });
+    const result = await runCallable<MidTerminateOutput>(
+      midTerminate,
+      buildRequest("mt-guide-g", {escortId: id})
+    );
+    expect(result.status).toBe("MidTerminated");
+    const data = (await db.collection("escorts").doc(id).get()).data();
+    expect(data?.status).toBe("MidTerminated");
+    expect(data?.midTerminatedBy).toBe("guide");
+    expect(data?.midTerminatedAt).not.toBeNull();
+  });
+
+  it("traveler 중도 종료 → MidTerminated + midTerminatedBy=traveler", async () => {
+    const id = await seedEscort({
+      guideId: "mt-trav-g",
+      travelerId: "mt-trav-t",
+      status: "InProgress",
+    });
+    await runCallable<MidTerminateOutput>(
+      midTerminate,
+      buildRequest("mt-trav-t", {escortId: id})
+    );
+    const data = (await db.collection("escorts").doc(id).get()).data();
+    expect(data?.midTerminatedBy).toBe("traveler");
+  });
+
+  it("reason이 있으면 저장된다", async () => {
+    const id = await seedEscort({
+      guideId: "mt-reason-g",
+      travelerId: "mt-reason-t",
+      status: "InProgress",
+    });
+    await runCallable<MidTerminateOutput>(
+      midTerminate,
+      buildRequest("mt-reason-g", {escortId: id, reason: "응급 상황 발생"})
+    );
+    const data = (await db.collection("escorts").doc(id).get()).data();
+    expect(data?.midTerminateReason).toBe("응급 상황 발생");
+  });
+
+  it("reason이 500자를 초과하면 거부된다", async () => {
+    const id = await seedEscort({
+      guideId: "mt-long-g",
+      travelerId: "mt-long-t",
+      status: "InProgress",
+    });
+    await expect(
+      runCallable<MidTerminateOutput>(
+        midTerminate,
+        buildRequest("mt-long-g", {escortId: id, reason: "x".repeat(501)})
+      )
+    ).rejects.toMatchObject({code: "invalid-argument"});
+  });
+
+  it("중도 종료는 패널티(noShowCount)를 증가시키지 않는다", async () => {
+    await seedUser("mt-pen-g", 0);
+    const id = await seedEscort({
+      guideId: "mt-pen-g",
+      travelerId: "mt-pen-t",
+      status: "InProgress",
+    });
+    await runCallable<MidTerminateOutput>(
+      midTerminate,
+      buildRequest("mt-pen-g", {escortId: id})
+    );
+    const g = (await db.collection("users").doc("mt-pen-g").get()).data();
+    expect(g?.noShowCount).toBe(0);
+  });
+
+  // ---- completeEscort ----
+
+  it("미인증 사용자는 완료 확인할 수 없다", async () => {
+    const id = await seedEscort({
+      guideId: "ce-g",
+      travelerId: "ce-t",
+      status: "InProgress",
+    });
+    await expect(
+      runCallable<CompleteEscortOutput>(
+        completeEscort,
+        buildRequest(undefined, {escortId: id})
+      )
+    ).rejects.toThrow();
+  });
+
+  it("당사자가 아니면 완료 확인할 수 없다", async () => {
+    const id = await seedEscort({
+      guideId: "ce-perm-g",
+      travelerId: "ce-perm-t",
+      status: "InProgress",
+    });
+    await expect(
+      runCallable<CompleteEscortOutput>(
+        completeEscort,
+        buildRequest("ce-stranger", {escortId: id})
+      )
+    ).rejects.toMatchObject({code: "permission-denied"});
+  });
+
+  it("InProgress가 아니면 완료 확인할 수 없다", async () => {
+    const id = await seedEscort({
+      guideId: "ce-st-g",
+      travelerId: "ce-st-t",
+      status: "MeetingConfirmed",
+    });
+    await expect(
+      runCallable<CompleteEscortOutput>(
+        completeEscort,
+        buildRequest("ce-st-g", {escortId: id})
+      )
+    ).rejects.toMatchObject({code: "failed-precondition"});
+  });
+
+  it("guide만 완료하면 InProgress 유지 + guideCompletedAt 기록", async () => {
+    const id = await seedEscort({
+      guideId: "ce-one-g",
+      travelerId: "ce-one-t",
+      status: "InProgress",
+    });
+    const result = await runCallable<CompleteEscortOutput>(
+      completeEscort,
+      buildRequest("ce-one-g", {escortId: id})
+    );
+    expect(result.status).toBe("InProgress");
+    const data = (await db.collection("escorts").doc(id).get()).data();
+    expect(data?.status).toBe("InProgress");
+    expect(data?.guideCompletedAt).not.toBeNull();
+    expect(data?.travelerCompletedAt).toBeNull();
+  });
+
+  it("traveler만 완료하면 InProgress 유지 + travelerCompletedAt 기록", async () => {
+    const id = await seedEscort({
+      guideId: "ce-onet-g",
+      travelerId: "ce-onet-t",
+      status: "InProgress",
+    });
+    const result = await runCallable<CompleteEscortOutput>(
+      completeEscort,
+      buildRequest("ce-onet-t", {escortId: id})
+    );
+    expect(result.status).toBe("InProgress");
+    const data = (await db.collection("escorts").doc(id).get()).data();
+    expect(data?.travelerCompletedAt).not.toBeNull();
+  });
+
+  it("양쪽 모두 완료하면 Completed로 전환", async () => {
+    const id = await seedEscort({
+      guideId: "ce-both-g",
+      travelerId: "ce-both-t",
+      status: "InProgress",
+      guideCompletedAt: Timestamp.now(),
+    });
+    const result = await runCallable<CompleteEscortOutput>(
+      completeEscort,
+      buildRequest("ce-both-t", {escortId: id})
+    );
+    expect(result.status).toBe("Completed");
+    const data = (await db.collection("escorts").doc(id).get()).data();
+    expect(data?.status).toBe("Completed");
+  });
+
+  it("traveler가 satisfactionRating 1~5를 보내면 저장된다", async () => {
+    const id = await seedEscort({
+      guideId: "ce-rate-g",
+      travelerId: "ce-rate-t",
+      status: "InProgress",
+    });
+    await runCallable<CompleteEscortOutput>(
+      completeEscort,
+      buildRequest("ce-rate-t", {escortId: id, satisfactionRating: 4})
+    );
+    const data = (await db.collection("escorts").doc(id).get()).data();
+    expect(data?.satisfactionRating).toBe(4);
+  });
+
+  it("traveler가 rating 없이도 완료 확인 가능", async () => {
+    const id = await seedEscort({
+      guideId: "ce-norate-g",
+      travelerId: "ce-norate-t",
+      status: "InProgress",
+    });
+    const result = await runCallable<CompleteEscortOutput>(
+      completeEscort,
+      buildRequest("ce-norate-t", {escortId: id})
+    );
+    expect(result.status).toBe("InProgress");
+    const data = (await db.collection("escorts").doc(id).get()).data();
+    expect(data?.satisfactionRating).toBeNull();
+  });
+
+  it("guide가 satisfactionRating을 보내면 거부", async () => {
+    const id = await seedEscort({
+      guideId: "ce-grate-g",
+      travelerId: "ce-grate-t",
+      status: "InProgress",
+    });
+    await expect(
+      runCallable<CompleteEscortOutput>(
+        completeEscort,
+        buildRequest("ce-grate-g", {escortId: id, satisfactionRating: 5})
+      )
+    ).rejects.toMatchObject({code: "permission-denied"});
+  });
+
+  it("satisfactionRating이 범위를 벗어나면 거부", async () => {
+    const id = await seedEscort({
+      guideId: "ce-range-g",
+      travelerId: "ce-range-t",
+      status: "InProgress",
+    });
+    await expect(
+      runCallable<CompleteEscortOutput>(
+        completeEscort,
+        buildRequest("ce-range-t", {escortId: id, satisfactionRating: 6})
+      )
+    ).rejects.toMatchObject({code: "invalid-argument"});
+  });
+
+  it("Completed/NoShow/Cancelled/MidTerminated에서는 완료 불가", async () => {
+    for (const status of [
+      "Completed",
+      "NoShow",
+      "Cancelled",
+      "MidTerminated",
+    ]) {
+      const id = await seedEscort({
+        guideId: "ce-term-g",
+        travelerId: "ce-term-t",
+        status,
+      });
+      await expect(
+        runCallable<CompleteEscortOutput>(
+          completeEscort,
+          buildRequest("ce-term-g", {escortId: id})
+        )
+      ).rejects.toMatchObject({code: "failed-precondition"});
+    }
   });
 });

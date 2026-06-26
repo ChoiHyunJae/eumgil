@@ -78,4 +78,36 @@ class EscortService {
     final callable = _fn.httpsCallable('judgeEscortNoShow');
     await callable.call<Map<String, dynamic>>({'escortId': escortId});
   }
+
+  /// InProgress 동행을 중도 종료한다(당사자만). reason은 선택(최대 500자).
+  /// 반환은 전이 후 상태("MidTerminated").
+  Future<String> midTerminate({
+    required String escortId,
+    String? reason,
+  }) async {
+    final payload = <String, dynamic>{'escortId': escortId};
+    final trimmed = reason?.trim();
+    if (trimmed != null && trimmed.isNotEmpty) {
+      payload['reason'] = trimmed;
+    }
+    final callable = _fn.httpsCallable('midTerminate');
+    final result = await callable.call<Map<String, dynamic>>(payload);
+    return result.data['status'] as String? ?? '';
+  }
+
+  /// 동행 완료를 확인한다(당사자만). satisfactionRating은 traveler만 1~5로 제출
+  /// 가능하며 guide가 보내면 백엔드가 거부한다. 양쪽 모두 확인되면 Completed로
+  /// 전환된다. 반환은 전이 후 상태("InProgress" 또는 "Completed").
+  Future<String> completeEscort({
+    required String escortId,
+    int? satisfactionRating,
+  }) async {
+    final payload = <String, dynamic>{'escortId': escortId};
+    if (satisfactionRating != null) {
+      payload['satisfactionRating'] = satisfactionRating;
+    }
+    final callable = _fn.httpsCallable('completeEscort');
+    final result = await callable.call<Map<String, dynamic>>(payload);
+    return result.data['status'] as String? ?? '';
+  }
 }
