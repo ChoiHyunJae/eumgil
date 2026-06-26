@@ -995,4 +995,133 @@ describe("escort module", () => {
       ).rejects.toMatchObject({code: "failed-precondition"});
     }
   });
+
+  // ---- Slice 9: 만족도 통계 반영 ----
+
+  it("rating 제출 시 안내자 guideStats.averageSatisfaction이 갱신된다", async () => {
+    await seedUser("st-guide-1", 0); // guideStats 초기값(avg null)
+    const id = await seedEscort({
+      guideId: "st-guide-1",
+      travelerId: "st-trav-1",
+      status: "InProgress",
+      guideCompletedAt: Timestamp.now(),
+    });
+    await runCallable<CompleteEscortOutput>(
+      completeEscort,
+      buildRequest("st-trav-1", {escortId: id, satisfactionRating: 5})
+    );
+
+    const escort = (await db.collection("escorts").doc(id).get()).data();
+    expect(escort?.satisfactionRating).toBe(5);
+    const guide = (await db.collection("users").doc("st-guide-1").get()).data();
+    expect(guide?.guideStats.averageSatisfaction).toBe(5);
+    expect(guide?.guideStats.ratedEscortCount).toBe(1);
+  });
+
+  it("여러 완료 동행의 rating 평균이 올바르게 계산된다", async () => {
+    await seedUser("st-guide-2", 0);
+    const idA = await seedEscort({
+      guideId: "st-guide-2",
+      travelerId: "st-trav-a",
+      status: "InProgress",
+      guideCompletedAt: Timestamp.now(),
+    });
+    await runCallable<CompleteEscortOutput>(
+      completeEscort,
+      buildRequest("st-trav-a", {escortId: idA, satisfactionRating: 4})
+    );
+    const idB = await seedEscort({
+      guideId: "st-guide-2",
+      travelerId: "st-trav-b",
+      status: "InProgress",
+      guideCompletedAt: Timestamp.now(),
+    });
+    await runCallable<CompleteEscortOutput>(
+      completeEscort,
+      buildRequest("st-trav-b", {escortId: idB, satisfactionRating: 2})
+    );
+
+    const guide = (await db.collection("users").doc("st-guide-2").get()).data();
+    expect(guide?.guideStats.averageSatisfaction).toBe(3); // (4+2)/2
+    expect(guide?.guideStats.ratedEscortCount).toBe(2);
+  });
+
+  it("rating 없이 완료하면 averageSatisfaction이 변하지 않는다", async () => {
+    await seedUser("st-guide-3", 0);
+    const id = await seedEscort({
+      guideId: "st-guide-3",
+      travelerId: "st-trav-3",
+      status: "InProgress",
+      guideCompletedAt: Timestamp.now(),
+    });
+    await runCallable<CompleteEscortOutput>(
+      completeEscort,
+      buildRequest("st-trav-3", {escortId: id})
+    );
+
+    const guide = (await db.collection("users").doc("st-guide-3").get()).data();
+    expect(guide?.guideStats.averageSatisfaction).toBeNull();
+    expect(guide?.guideStats.ratedEscortCount ?? 0).toBe(0);
+  });
+
+  it("traveler 먼저 rating, InProgress면 guideStats 미변경", async () => {
+    await seedUser("st-first-g", 0);
+    // guide 미완료 → traveler 완료해도 status는 InProgress 유지.
+    const id = await seedEscort({
+      guideId: "st-first-g",
+      travelerId: "st-first-t",
+      status: "InProgress",
+    });
+    const r1 = await runCallable<CompleteEscortOutput>(
+      completeEscort,
+      buildRequest("st-first-t", {escortId: id, satisfactionRating: 5})
+    );
+    expect(r1.status).toBe("InProgress");
+
+    // escort에는 rating 저장, 통계는 아직 미반영.
+    let escort = (await db.collection("escorts").doc(id).get()).data();
+    expect(escort?.satisfactionRating).toBe(5);
+    expect(escort?.satisfactionStatsAppliedAt ?? null).toBeNull();
+    let guide = (await db.collection("users").doc("st-first-g").get()).data();
+    expect(guide?.guideStats.averageSatisfaction).toBeNull();
+
+    // 이후 guide가 완료 → Completed 전환 시 기존 rating이 통계에 반영된다.
+    const r2 = await runCallable<CompleteEscortOutput>(
+      completeEscort,
+      buildRequest("st-first-g", {escortId: id})
+    );
+    expect(r2.status).toBe("Completed");
+
+    escort = (await db.collection("escorts").doc(id).get()).data();
+    expect(escort?.satisfactionStatsAppliedAt).not.toBeNull();
+    guide = (await db.collection("users").doc("st-first-g").get()).data();
+    expect(guide?.guideStats.averageSatisfaction).toBe(5);
+    expect(guide?.guideStats.ratedEscortCount).toBe(1);
+  });
+
+  it("satisfactionStatsAppliedAt이 있으면 같은 escort는 중복 반영되지 않는다", async () => {
+    await seedUser("st-flag-g", 0);
+    // 이미 통계 반영된(플래그 존재) escort. traveler는 완료 상태, guide만 미완료.
+    const id = await seedEscort({
+      guideId: "st-flag-g",
+      travelerId: "st-flag-t",
+      status: "InProgress",
+      travelerCompletedAt: Timestamp.now(),
+    });
+    await db.collection("escorts").doc(id).update({
+      satisfactionRating: 5,
+      satisfactionStatsAppliedAt: Timestamp.now(),
+    });
+
+    // guide 완료 → Completed 전환되지만 플래그가 있어 통계 재반영 안 함.
+    const r = await runCallable<CompleteEscortOutput>(
+      completeEscort,
+      buildRequest("st-flag-g", {escortId: id})
+    );
+    expect(r.status).toBe("Completed");
+
+    const guide = (await db.collection("users").doc("st-flag-g").get()).data();
+    expect(guide?.guideStats.averageSatisfaction).toBeNull(); // 중복 반영 안 됨
+    expect(guide?.guideStats.ratedEscortCount ?? 0).toBe(0);
+  });
 });

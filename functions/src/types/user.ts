@@ -62,4 +62,9 @@ export interface GuideStats {
   totalRequestsReceived: number;
   /** US#21: 성사율 분자(Completed 동행 수). */
   completedEscortCount: number;
+  /**
+   * US#38 / Slice 9: averageSatisfaction 러닝 평균의 분모(반영된 평가 건수).
+   * 미존재면 0으로 본다. 평가는 선택이므로 completedEscortCount와 별개로 센다.
+   */
+  ratedEscortCount?: number;
 }

@@ -1,13 +1,14 @@
 import * as admin from "firebase-admin";
 import {Timestamp} from "firebase-admin/firestore";
 import {onSchedule} from "firebase-functions/v2/scheduler";
-import {Escort} from "../types";
+import {Escort, GuideStats} from "../types";
 import {notifyEscortLifecycle} from "../notifications";
 import {
   applyEscortPenalty,
   NO_SHOW_GRACE_MS,
   noShowParties,
 } from "../escort/penalty";
+import {nextSatisfactionStats} from "../escort/satisfaction";
 
 /**
  * scheduled 모듈 — PRD에서 시간 경과로 자동 트리거되는 규칙.
@@ -129,20 +130,81 @@ export const autoCompleteEscort = onSchedule("every 15 minutes", async () => {
 
   if (snap.empty) return;
 
-  const batch = db.batch();
-  const completed: Array<Pick<Escort, "guideId" | "travelerId">> = [];
+  // 1) 24시간 경과한 자동 완료 대상 선별.
+  const toComplete: Array<{
+    ref: admin.firestore.DocumentReference;
+    escort: Omit<Escort, "id">;
+  }> = [];
   for (const doc of snap.docs) {
     const escort = doc.data() as Omit<Escort, "id">;
     if (now.toMillis() - inProgressStartMs(escort) >= AUTO_COMPLETE_MS) {
-      batch.update(doc.ref, {
-        status: "Completed",
-        autoCompletedAt: now,
-        updatedAt: now,
-      });
-      completed.push({guideId: escort.guideId, travelerId: escort.travelerId});
+      toComplete.push({ref: doc.ref, escort});
     }
   }
-  if (completed.length === 0) return;
+  if (toComplete.length === 0) return;
+
+  // 2) 만족도 통계 반영 대상(평가 있고 미반영)을 guideId별로 모은다.
+  //    같은 guide에 여러 평가가 있으면 순차 누적한다.
+  const ratingsByGuide = new Map<string, number[]>();
+  for (const {escort} of toComplete) {
+    if (
+      escort.satisfactionRating != null &&
+      escort.satisfactionStatsAppliedAt == null
+    ) {
+      const list = ratingsByGuide.get(escort.guideId) ?? [];
+      list.push(escort.satisfactionRating);
+      ratingsByGuide.set(escort.guideId, list);
+    }
+  }
+
+  // 3) batch 전에 필요한 guide 문서를 먼저 읽는다(read-before-write).
+  const guideIds = [...ratingsByGuide.keys()];
+  const guideSnaps = await Promise.all(
+    guideIds.map((id) => db.collection("users").doc(id).get())
+  );
+  const guideStatsById = new Map<string, Partial<GuideStats>>();
+  guideSnaps.forEach((gs, i) => {
+    if (gs.exists) {
+      guideStatsById.set(
+        guideIds[i],
+        (gs.data()?.guideStats ?? {}) as Partial<GuideStats>
+      );
+    }
+  });
+
+  // 4) 단일 batch로 escort 자동 완료 + guide 통계 갱신을 처리한다.
+  const batch = db.batch();
+  const completed: Array<Pick<Escort, "guideId" | "travelerId">> = [];
+  for (const {ref, escort} of toComplete) {
+    const escortUpdate: Record<string, unknown> = {
+      status: "Completed",
+      autoCompletedAt: now,
+      updatedAt: now,
+    };
+    // 이 escort의 평가를 이번에 통계 반영할 수 있으면 플래그를 기록한다.
+    if (
+      escort.satisfactionRating != null &&
+      escort.satisfactionStatsAppliedAt == null &&
+      guideStatsById.has(escort.guideId)
+    ) {
+      escortUpdate.satisfactionStatsAppliedAt = now;
+    }
+    batch.update(ref, escortUpdate);
+    completed.push({guideId: escort.guideId, travelerId: escort.travelerId});
+  }
+  for (const [guideId, ratings] of ratingsByGuide) {
+    const stats = guideStatsById.get(guideId);
+    if (!stats) continue; // guide 문서가 없으면 통계 반영 생략
+    let acc: Partial<GuideStats> = stats;
+    for (const rating of ratings) {
+      acc = nextSatisfactionStats(acc, rating);
+    }
+    batch.update(db.collection("users").doc(guideId), {
+      "guideStats.averageSatisfaction": acc.averageSatisfaction,
+      "guideStats.ratedEscortCount": acc.ratedEscortCount,
+      "updatedAt": now,
+    });
+  }
 
   await batch.commit();
 

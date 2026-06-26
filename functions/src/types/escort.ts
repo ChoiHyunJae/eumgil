@@ -67,6 +67,11 @@ export interface Escort {
   travelerCompletedAt: Timestamp | null;
   /** US#38 (1차 포함, 일정에 따라 축소·연기 가능): 1~5 또는 만족/보통/불만족을 수치화. */
   satisfactionRating: number | null;
+  /**
+   * US#38 / Slice 9: satisfactionRating이 안내자 guideStats(평균)에 반영된 시각.
+   * Completed 전환 시 1회 반영하고 기록한다. null/미존재면 아직 미반영.
+   */
+  satisfactionStatsAppliedAt?: Timestamp | null;
   /** US#25: scheduled/expireEscortRequests가 Requested→Expired 전환 시 기록. */
   expiredAt?: Timestamp | null;
   /** US#35: scheduled/autoCompleteEscort가 InProgress→Completed 자동 완료 시 기록. */
