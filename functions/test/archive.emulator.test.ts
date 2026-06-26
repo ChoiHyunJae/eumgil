@@ -375,4 +375,33 @@ describe("archive module", () => {
       expect(placeIds).not.toContain("near-walk");
     }
   );
+
+  it("exactLocation 없는 문서는 에러 없이 무시된다", async () => {
+    // exactLocation 없이 published=true, hidden=false인 불완전 문서를 직접 시드한다.
+    await db.collection("archiveItems").doc("no-exactlocation").set({
+      authorId: "seed-author",
+      category: "PLACE",
+      voiceTranscript: "좌표 없는 문서",
+      aiSummary: null,
+      confirmedByAuthor: true,
+      photoUrls: [],
+      dongLabel: "행정동 확인 필요",
+      visibilityRadiusM: 3000,
+      published: true,
+      reportCount: 0,
+      hidden: false,
+      createdAt: Timestamp.now(),
+      updatedAt: Timestamp.now(),
+    });
+    await seedArchiveItem("valid-near-place", {lat: 37.5665, lng: 126.978});
+
+    const result = await runCallable<ListNearbyArchiveItemsOutput>(
+      listNearbyArchiveItems,
+      buildRequest(EXPLORER, {location: SEOUL})
+    );
+
+    const ids = result.items.map((item) => item.id);
+    expect(ids).not.toContain("no-exactlocation"); // 무효 문서는 제외
+    expect(ids).toContain("valid-near-place"); // 정상 문서는 그대로 반환
+  });
 });

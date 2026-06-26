@@ -309,6 +309,15 @@ export const listNearbyArchiveItems = onCall<
     };
     // exactLocation을 거리 계산에만 사용하고, 응답에서는 구조분해로 제거한다.
     const {exactLocation, ...publicView} = item;
+    // exactLocation이 없거나 잘못된 문서는 거리 계산이 불가하므로 결과에서 제외한다
+    // (타입상 GeoPoint이지만 런타임 문서가 이를 보장하지 않는다).
+    if (
+      !exactLocation ||
+      typeof exactLocation.latitude !== "number" ||
+      typeof exactLocation.longitude !== "number"
+    ) {
+      continue;
+    }
     const distanceM = haversineMeters(
       location.lat,
       location.lng,
