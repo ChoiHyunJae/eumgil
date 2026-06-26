@@ -3,6 +3,11 @@ import {Timestamp} from "firebase-admin/firestore";
 import {HttpsError, onCall} from "firebase-functions/v2/https";
 import {Escort, EscortParty, EscortStatus} from "../types";
 import {
+  applyEscortPenalty,
+  NO_SHOW_GRACE_MS,
+  noShowParties,
+} from "./penalty";
+import {
   CancelEscortInput,
   CancelEscortOutput,
   CheckArrivalInput,
@@ -39,46 +44,6 @@ const CANCELLABLE_STATUSES: EscortStatus[] = ["Accepted", "MeetingConfirmed"];
 
 /** US#30~31: "만났어요" 확인을 허용하는 두 기기 GPS 근접 임계(미터). */
 const MEETING_PROXIMITY_M = 50;
-
-/** US#32: 노쇼 판정 가능 시점(약속 시간 + 30분, 밀리초). */
-const NO_SHOW_GRACE_MS = 30 * 60 * 1000;
-
-/** US#33/#60: 약속 위반(노쇼+당일취소) 누적 임계. 이 이상이면 매칭 제한. */
-const PENALTY_THRESHOLD = 3;
-
-/** US#60: 매칭 제한 기간(7일, 밀리초). */
-const MATCH_BLOCK_MS = 7 * 24 * 60 * 60 * 1000;
-
-/**
- * 약속 위반(노쇼 또는 당일취소) 패널티를 트랜잭션 안에서 사용자 문서에 적용한다.
- * noShowCount를 1 증가시키고, 누적이 임계 이상이면 matchBlockedUntil을 now+7일로
- * 설정한다. 모든 read 이후에 호출해야 한다(트랜잭션 read-before-write 규칙).
- *
- * @param {admin.firestore.Transaction} tx 진행 중 트랜잭션.
- * @param {admin.firestore.DocumentReference} userRef 대상 사용자 문서 참조.
- * @param {admin.firestore.DocumentSnapshot} userSnap 미리 읽어둔 사용자 스냅샷.
- * @param {Timestamp} now 기준 현재 시각.
- * @return {void}
- */
-function applyEscortPenalty(
-  tx: admin.firestore.Transaction,
-  userRef: admin.firestore.DocumentReference,
-  userSnap: admin.firestore.DocumentSnapshot,
-  now: Timestamp
-): void {
-  if (!userSnap.exists) {
-    return; // 사용자 문서가 없으면 패널티를 생략한다(데이터 정합성 보호).
-  }
-  const current = (userSnap.data()?.noShowCount as number | undefined) ?? 0;
-  const next = current + 1;
-  const updates: Record<string, unknown> = {noShowCount: next, updatedAt: now};
-  if (next >= PENALTY_THRESHOLD) {
-    updates.matchBlockedUntil = Timestamp.fromMillis(
-      now.toMillis() + MATCH_BLOCK_MS
-    );
-  }
-  tx.update(userRef, updates);
-}
 
 /**
  * 두 Timestamp가 같은 UTC 날짜인지 판정한다(당일 취소 판정용).
@@ -355,18 +320,13 @@ export const judgeEscortNoShow = onCall<
       );
     }
 
-    const guideArrived = escort.guideArrivalConfirmedAt != null;
-    const travelerArrived = escort.travelerArrivalConfirmedAt != null;
-    if (guideArrived && travelerArrived) {
+    const noShowBy = noShowParties(escort);
+    if (noShowBy.length === 0) {
       throw new HttpsError(
         "failed-precondition",
         "양쪽 모두 도착을 확인해 노쇼가 아닙니다."
       );
     }
-
-    const noShowBy: EscortParty[] = [];
-    if (!guideArrived) noShowBy.push("guide");
-    if (!travelerArrived) noShowBy.push("traveler");
 
     // 패널티 대상 사용자 문서를 모두 먼저 읽는다(read-before-write).
     const penaltyRefs = noShowBy.map((party) =>
