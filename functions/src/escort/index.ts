@@ -1,7 +1,7 @@
 import * as admin from "firebase-admin";
 import {Timestamp} from "firebase-admin/firestore";
 import {HttpsError, onCall} from "firebase-functions/v2/https";
-import {Escort, EscortParty, EscortStatus} from "../types";
+import {Escort, EscortParty, EscortStatus, GuideStats} from "../types";
 import {
   EscortNotificationEvent,
   notifyEscortLifecycle,
@@ -11,6 +11,7 @@ import {
   NO_SHOW_GRACE_MS,
   noShowParties,
 } from "./penalty";
+import {nextSatisfactionStats} from "./satisfaction";
 
 /**
  * 동행 생명주기 알림을 best-effort로 발송한다. 알림 실패가 상태 전환 결과를
@@ -599,16 +600,48 @@ export const completeEscort = onCall<
       "Completed" :
       "InProgress";
 
+    // 평가 저장: traveler가 처음 제출할 때만 escort.satisfactionRating에 기록한다
+    // (status와 무관하게 저장 허용). 이후 변경/중복 제출은 무시한다.
+    const storeRatingNow =
+      satisfactionRating !== undefined && escort.satisfactionRating == null;
+    const effectiveRating: number | null = storeRatingNow ?
+      (satisfactionRating as number) :
+      escort.satisfactionRating;
+
+    // 통계 반영은 Completed로 전환되는 순간에만, 평가가 있고 아직 미반영일 때 1회.
+    const applyStats =
+      status === "Completed" &&
+      effectiveRating != null &&
+      escort.satisfactionStatsAppliedAt == null;
+    const guideRef = db.collection("users").doc(escort.guideId);
+    // 통계 갱신 시 read-before-write를 지키도록 모든 write 전에 guide 문서를 읽는다.
+    const guideSnap = applyStats ? await tx.get(guideRef) : null;
+
     const updates: Record<string, unknown> = {status, updatedAt: now};
     if (party === "guide") {
       updates.guideCompletedAt = now;
     } else {
       updates.travelerCompletedAt = now;
     }
-    if (satisfactionRating !== undefined) {
+    if (storeRatingNow) {
       updates.satisfactionRating = satisfactionRating;
     }
+    if (applyStats) {
+      updates.satisfactionStatsAppliedAt = now;
+    }
     tx.update(ref, updates);
+
+    // 안내자 누적 만족도 평균(러닝 평균)을 Completed 시 1회 반영한다.
+    if (applyStats && guideSnap?.exists) {
+      const stats = guideSnap.data()?.guideStats as
+        Partial<GuideStats> | undefined;
+      const next = nextSatisfactionStats(stats, effectiveRating as number);
+      tx.update(guideRef, {
+        "guideStats.averageSatisfaction": next.averageSatisfaction,
+        "guideStats.ratedEscortCount": next.ratedEscortCount,
+        "updatedAt": now,
+      });
+    }
 
     if (status === "Completed") {
       parties = {guideId: escort.guideId, travelerId: escort.travelerId};

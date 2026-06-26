@@ -53,6 +53,8 @@ describe("scheduled escort lifecycle", () => {
     guideArrivalConfirmedAt?: Timestamp | null;
     travelerArrivalConfirmedAt?: Timestamp | null;
     updatedAt?: Timestamp;
+    satisfactionRating?: number | null;
+    satisfactionStatsAppliedAt?: Timestamp | null;
   }): Promise<string> {
     const now = Timestamp.now();
     const ref = db.collection("escorts").doc();
@@ -76,7 +78,8 @@ describe("scheduled escort lifecycle", () => {
       midTerminatedAt: null,
       guideCompletedAt: null,
       travelerCompletedAt: null,
-      satisfactionRating: null,
+      satisfactionRating: fields.satisfactionRating ?? null,
+      satisfactionStatsAppliedAt: fields.satisfactionStatsAppliedAt ?? null,
       createdAt: now,
       updatedAt: fields.updatedAt ?? now,
     });
@@ -263,5 +266,66 @@ describe("scheduled escort lifecycle", () => {
     await runScheduled(autoCompleteEscort);
     const escort = (await db.collection("escorts").doc(id).get()).data();
     expect(escort?.status).toBe("InProgress");
+  });
+
+  it("autoComplete Completed 전환 시 기존 rating이 guideStats에 반영된다", async () => {
+    // traveler가 먼저 rating 제출(InProgress) → 24h 후 자동 완료 상황을 가정한다.
+    await seedUser("ac-rate-g", 0);
+    const id = await seedEscort({
+      guideId: "ac-rate-g",
+      travelerId: "ac-rate-t",
+      status: "InProgress",
+      guideArrivalConfirmedAt: hoursAgo(25),
+      travelerArrivalConfirmedAt: hoursAgo(25),
+      satisfactionRating: 5,
+    });
+
+    await runScheduled(autoCompleteEscort);
+
+    const escort = (await db.collection("escorts").doc(id).get()).data();
+    expect(escort?.status).toBe("Completed");
+    expect(escort?.satisfactionStatsAppliedAt).not.toBeNull();
+    const guide = (await db.collection("users").doc("ac-rate-g").get()).data();
+    expect(guide?.guideStats.averageSatisfaction).toBe(5);
+    expect(guide?.guideStats.ratedEscortCount).toBe(1);
+  });
+
+  it("autoComplete: rating 없으면 guideStats 미변경", async () => {
+    await seedUser("ac-norate-g", 0);
+    const id = await seedEscort({
+      guideId: "ac-norate-g",
+      travelerId: "ac-norate-t",
+      status: "InProgress",
+      guideArrivalConfirmedAt: hoursAgo(25),
+      travelerArrivalConfirmedAt: hoursAgo(25),
+    });
+
+    await runScheduled(autoCompleteEscort);
+
+    const escort = (await db.collection("escorts").doc(id).get()).data();
+    expect(escort?.status).toBe("Completed");
+    const guideRef = db.collection("users").doc("ac-norate-g");
+    const guide = (await guideRef.get()).data();
+    expect(guide?.guideStats.averageSatisfaction).toBeNull();
+  });
+
+  it("autoComplete: 이미 반영(flag)된 escort는 중복 반영하지 않는다", async () => {
+    await seedUser("ac-flag-g", 0);
+    const id = await seedEscort({
+      guideId: "ac-flag-g",
+      travelerId: "ac-flag-t",
+      status: "InProgress",
+      guideArrivalConfirmedAt: hoursAgo(25),
+      travelerArrivalConfirmedAt: hoursAgo(25),
+      satisfactionRating: 4,
+      satisfactionStatsAppliedAt: Timestamp.now(),
+    });
+
+    await runScheduled(autoCompleteEscort);
+
+    const escort = (await db.collection("escorts").doc(id).get()).data();
+    expect(escort?.status).toBe("Completed");
+    const guide = (await db.collection("users").doc("ac-flag-g").get()).data();
+    expect(guide?.guideStats.averageSatisfaction).toBeNull(); // 중복 반영 안 됨
   });
 });
