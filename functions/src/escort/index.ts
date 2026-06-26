@@ -11,6 +11,8 @@ import {
   CompleteEscortOutput,
   ConfirmMeetingInput,
   ConfirmMeetingOutput,
+  JudgeNoShowInput,
+  JudgeNoShowOutput,
   ListMyEscortsInput,
   ListMyEscortsOutput,
   MidTerminateInput,
@@ -37,6 +39,46 @@ const CANCELLABLE_STATUSES: EscortStatus[] = ["Accepted", "MeetingConfirmed"];
 
 /** US#30~31: "만났어요" 확인을 허용하는 두 기기 GPS 근접 임계(미터). */
 const MEETING_PROXIMITY_M = 50;
+
+/** US#32: 노쇼 판정 가능 시점(약속 시간 + 30분, 밀리초). */
+const NO_SHOW_GRACE_MS = 30 * 60 * 1000;
+
+/** US#33/#60: 약속 위반(노쇼+당일취소) 누적 임계. 이 이상이면 매칭 제한. */
+const PENALTY_THRESHOLD = 3;
+
+/** US#60: 매칭 제한 기간(7일, 밀리초). */
+const MATCH_BLOCK_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * 약속 위반(노쇼 또는 당일취소) 패널티를 트랜잭션 안에서 사용자 문서에 적용한다.
+ * noShowCount를 1 증가시키고, 누적이 임계 이상이면 matchBlockedUntil을 now+7일로
+ * 설정한다. 모든 read 이후에 호출해야 한다(트랜잭션 read-before-write 규칙).
+ *
+ * @param {admin.firestore.Transaction} tx 진행 중 트랜잭션.
+ * @param {admin.firestore.DocumentReference} userRef 대상 사용자 문서 참조.
+ * @param {admin.firestore.DocumentSnapshot} userSnap 미리 읽어둔 사용자 스냅샷.
+ * @param {Timestamp} now 기준 현재 시각.
+ * @return {void}
+ */
+function applyEscortPenalty(
+  tx: admin.firestore.Transaction,
+  userRef: admin.firestore.DocumentReference,
+  userSnap: admin.firestore.DocumentSnapshot,
+  now: Timestamp
+): void {
+  if (!userSnap.exists) {
+    return; // 사용자 문서가 없으면 패널티를 생략한다(데이터 정합성 보호).
+  }
+  const current = (userSnap.data()?.noShowCount as number | undefined) ?? 0;
+  const next = current + 1;
+  const updates: Record<string, unknown> = {noShowCount: next, updatedAt: now};
+  if (next >= PENALTY_THRESHOLD) {
+    updates.matchBlockedUntil = Timestamp.fromMillis(
+      now.toMillis() + MATCH_BLOCK_MS
+    );
+  }
+  tx.update(userRef, updates);
+}
 
 /**
  * 두 Timestamp가 같은 UTC 날짜인지 판정한다(당일 취소 판정용).
@@ -208,20 +250,147 @@ export const confirmMeeting = onCall<
   return {status};
 });
 
-/** US#32: 노쇼 판정 결과 조회. */
+/**
+ * US#32 / Slice 7-3: 동행의 도착 확인 상태와 노쇼 판정 가능 여부를 조회한다(당사자 전용).
+ */
 export const checkArrival = onCall<
   CheckArrivalInput, Promise<CheckArrivalOutput>
->(
-  async () => {
-    throw new Error("not implemented");
+>(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "로그인이 필요합니다.");
   }
-);
+  const {escortId} = request.data;
+  if (!escortId) {
+    throw new HttpsError("invalid-argument", "escortId가 필요합니다.");
+  }
+
+  const uid = request.auth.uid;
+  const ref = admin.firestore().collection("escorts").doc(escortId);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    throw new HttpsError("not-found", "동행을 찾을 수 없습니다.");
+  }
+  const escort = snap.data() as Omit<Escort, "id">;
+  if (escort.guideId !== uid && escort.travelerId !== uid) {
+    throw new HttpsError(
+      "permission-denied",
+      "본인이 참여한 동행만 조회할 수 있습니다."
+    );
+  }
+
+  const now = Timestamp.now();
+  const guideArrivalConfirmed = escort.guideArrivalConfirmedAt != null;
+  const travelerArrivalConfirmed = escort.travelerArrivalConfirmedAt != null;
+  const past30 =
+    escort.meetingTime != null &&
+    now.toMillis() >= escort.meetingTime.toMillis() + NO_SHOW_GRACE_MS;
+  const canJudgeNoShow =
+    escort.status === "MeetingConfirmed" &&
+    past30 &&
+    !(guideArrivalConfirmed && travelerArrivalConfirmed);
+
+  return {
+    status: escort.status,
+    guideArrivalConfirmed,
+    travelerArrivalConfirmed,
+    canJudgeNoShow,
+    meetingTime: escort.meetingTime ?
+      escort.meetingTime.toDate().toISOString() :
+      null,
+  };
+});
 
 /**
- * US#27~29 / Slice 7: 동행 시작 전 취소(Accepted|MeetingConfirmed → Cancelled).
+ * US#32~33 / Slice 7-3: 약속 시간 + 30분 이후 미확인 당사자를 NoShow로 판정한다.
+ * MeetingConfirmed 상태에서만 허용하며 당사자만 호출할 수 있다. 도착을 확인하지
+ * 않은 쪽(guide/traveler, 양쪽 다 미확인이면 둘 다)을 noShowBy로 기록하고
+ * status를 NoShow로 전이한다. 각 노쇼 대상에 약속 위반 패널티를 적용한다.
+ * escort 상태와 사용자 패널티를 트랜잭션으로 일관되게 갱신한다.
+ *
+ * 이름은 scheduled/judgeNoShow(onSchedule 자동 판정)와의 export 충돌을 피하려고
+ * judgeEscortNoShow로 둔다. 클라이언트는 이 callable로 수동 판정을 트리거한다.
+ */
+export const judgeEscortNoShow = onCall<
+  JudgeNoShowInput, Promise<JudgeNoShowOutput>
+>(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "로그인이 필요합니다.");
+  }
+  const {escortId} = request.data;
+  if (!escortId) {
+    throw new HttpsError("invalid-argument", "escortId가 필요합니다.");
+  }
+
+  const uid = request.auth.uid;
+  const db = admin.firestore();
+  const escortRef = db.collection("escorts").doc(escortId);
+
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(escortRef);
+    if (!snap.exists) {
+      throw new HttpsError("not-found", "동행을 찾을 수 없습니다.");
+    }
+    const escort = snap.data() as Omit<Escort, "id">;
+    if (escort.guideId !== uid && escort.travelerId !== uid) {
+      throw new HttpsError(
+        "permission-denied",
+        "본인이 참여한 동행만 판정할 수 있습니다."
+      );
+    }
+    if (escort.status !== "MeetingConfirmed") {
+      throw new HttpsError(
+        "failed-precondition",
+        "만남 확정 상태에서만 노쇼를 판정할 수 있습니다."
+      );
+    }
+    if (!escort.meetingTime) {
+      throw new HttpsError("failed-precondition", "만남 시간이 없습니다.");
+    }
+
+    const now = Timestamp.now();
+    if (now.toMillis() < escort.meetingTime.toMillis() + NO_SHOW_GRACE_MS) {
+      throw new HttpsError(
+        "failed-precondition",
+        "약속 시간 + 30분 이후에만 노쇼를 판정할 수 있습니다."
+      );
+    }
+
+    const guideArrived = escort.guideArrivalConfirmedAt != null;
+    const travelerArrived = escort.travelerArrivalConfirmedAt != null;
+    if (guideArrived && travelerArrived) {
+      throw new HttpsError(
+        "failed-precondition",
+        "양쪽 모두 도착을 확인해 노쇼가 아닙니다."
+      );
+    }
+
+    const noShowBy: EscortParty[] = [];
+    if (!guideArrived) noShowBy.push("guide");
+    if (!travelerArrived) noShowBy.push("traveler");
+
+    // 패널티 대상 사용자 문서를 모두 먼저 읽는다(read-before-write).
+    const penaltyRefs = noShowBy.map((party) =>
+      db
+        .collection("users")
+        .doc(party === "guide" ? escort.guideId : escort.travelerId)
+    );
+    const penaltySnaps = await Promise.all(penaltyRefs.map((r) => tx.get(r)));
+
+    // 쓰기: escort 상태 + 각 대상 패널티.
+    tx.update(escortRef, {status: "NoShow", noShowBy, updatedAt: now});
+    penaltyRefs.forEach((ref, i) => {
+      applyEscortPenalty(tx, ref, penaltySnaps[i], now);
+    });
+
+    return {status: "NoShow" as const, noShowBy};
+  });
+});
+
+/**
+ * US#27~29 / Slice 7-3: 동행 시작 전 취소(Accepted|MeetingConfirmed → Cancelled).
  * 당사자(guide 또는 traveler)만 취소할 수 있다. 만남 시각과 같은 UTC 날짜에
- * 취소하면 당일 취소로 표시한다(isSameDayCancellation). 노쇼 카운터/매칭 제한
- * 누적(ADR-0001 패널티)은 별도 슬라이스로 두며 여기서는 상태 전이만 수행한다.
+ * 취소하면 당일 취소(isSameDayCancellation)로 표시하고, 노쇼와 동일하게 취소자에게
+ * 약속 위반 패널티를 적용한다(ADR-0001). escort 상태와 패널티를 트랜잭션으로 갱신한다.
  */
 export const cancelEscort = onCall<
   CancelEscortInput, Promise<CancelEscortOutput>
@@ -236,45 +405,56 @@ export const cancelEscort = onCall<
   }
 
   const uid = request.auth.uid;
-  const ref = admin.firestore().collection("escorts").doc(escortId);
-  const snap = await ref.get();
-  if (!snap.exists) {
-    throw new HttpsError("not-found", "동행을 찾을 수 없습니다.");
-  }
+  const db = admin.firestore();
+  const escortRef = db.collection("escorts").doc(escortId);
 
-  const escort = snap.data() as Omit<Escort, "id">;
-  let cancelledBy: EscortParty;
-  if (escort.guideId === uid) {
-    cancelledBy = "guide";
-  } else if (escort.travelerId === uid) {
-    cancelledBy = "traveler";
-  } else {
-    throw new HttpsError(
-      "permission-denied",
-      "본인이 참여한 동행만 취소할 수 있습니다."
-    );
-  }
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(escortRef);
+    if (!snap.exists) {
+      throw new HttpsError("not-found", "동행을 찾을 수 없습니다.");
+    }
 
-  if (!CANCELLABLE_STATUSES.includes(escort.status)) {
-    throw new HttpsError(
-      "failed-precondition",
-      "취소할 수 없는 상태입니다(시작 전 동행만 취소 가능)."
-    );
-  }
+    const escort = snap.data() as Omit<Escort, "id">;
+    let cancelledBy: EscortParty;
+    if (escort.guideId === uid) {
+      cancelledBy = "guide";
+    } else if (escort.travelerId === uid) {
+      cancelledBy = "traveler";
+    } else {
+      throw new HttpsError(
+        "permission-denied",
+        "본인이 참여한 동행만 취소할 수 있습니다."
+      );
+    }
 
-  const now = Timestamp.now();
-  const isSameDayCancellation =
-    escort.meetingTime != null && isSameUtcDay(escort.meetingTime, now);
+    if (!CANCELLABLE_STATUSES.includes(escort.status)) {
+      throw new HttpsError(
+        "failed-precondition",
+        "취소할 수 없는 상태입니다(시작 전 동행만 취소 가능)."
+      );
+    }
 
-  await ref.update({
-    status: "Cancelled",
-    cancelledBy,
-    cancelledAt: now,
-    isSameDayCancellation,
-    updatedAt: now,
+    const now = Timestamp.now();
+    const isSameDayCancellation =
+      escort.meetingTime != null && isSameUtcDay(escort.meetingTime, now);
+
+    // 당일 취소면 취소자 패널티 적용을 위해 사용자 문서를 미리 읽는다.
+    const userRef = db.collection("users").doc(uid);
+    const userSnap = isSameDayCancellation ? await tx.get(userRef) : null;
+
+    tx.update(escortRef, {
+      status: "Cancelled",
+      cancelledBy,
+      cancelledAt: now,
+      isSameDayCancellation,
+      updatedAt: now,
+    });
+    if (userSnap) {
+      applyEscortPenalty(tx, userRef, userSnap, now);
+    }
+
+    return {status: "Cancelled", isSameDayCancellation};
   });
-
-  return {status: "Cancelled", isSameDayCancellation};
 });
 
 /** US#34: InProgress 중 중도 종료. 소모임 카운트에서 제외(group-suggestion 모듈 규칙). */

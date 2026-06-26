@@ -1,10 +1,18 @@
 import * as admin from "firebase-admin";
 import {GeoPoint, Timestamp} from "firebase-admin/firestore";
 import type {CallableRequest} from "firebase-functions/v2/https";
-import {cancelEscort, confirmMeeting, listMyEscorts} from "../src/escort";
+import {
+  cancelEscort,
+  checkArrival,
+  confirmMeeting,
+  judgeEscortNoShow,
+  listMyEscorts,
+} from "../src/escort";
 import type {
   CancelEscortOutput,
+  CheckArrivalOutput,
   ConfirmMeetingOutput,
+  JudgeNoShowOutput,
   ListMyEscortsOutput,
 } from "../src/escort/types";
 
@@ -110,6 +118,36 @@ describe("escort module", () => {
     });
     return ref.id;
   }
+
+  /**
+   * users/{uid} 문서를 noShowCount 지정값으로 만든다(패널티 테스트용).
+   * @param {string} uid 사용자 uid.
+   * @param {number} noShowCount 초기 누적 위반 횟수.
+   * @return {Promise<void>} 쓰기 완료 Promise.
+   */
+  async function seedUser(uid: string, noShowCount: number): Promise<void> {
+    await db.collection("users").doc(uid).set({
+      phoneNumber: "+821000000000",
+      emergencyContact: {name: "보호자", phoneNumber: "+821011112222"},
+      guideApproved: false,
+      matchBlockedUntil: null,
+      noShowCount,
+      guideStats: {
+        averageSatisfaction: null,
+        totalRequestsReceived: 0,
+        completedEscortCount: 0,
+      },
+      createdAt: Timestamp.now(),
+      updatedAt: Timestamp.now(),
+    });
+  }
+
+  // 약속 시간이 과거(31분 전)인 Timestamp.
+  const meetingPast31 = (): Timestamp =>
+    Timestamp.fromMillis(Date.now() - 31 * 60 * 1000);
+  // 약속 시간이 미래(10분 후)인 Timestamp.
+  const meetingFuture = (): Timestamp =>
+    Timestamp.fromMillis(Date.now() + 10 * 60 * 1000);
 
   // ---- listMyEscorts ----
 
@@ -421,5 +459,246 @@ describe("escort module", () => {
     expect(data?.status).toBe("InProgress");
     expect(data?.guideArrivalConfirmedAt).not.toBeNull();
     expect(data?.travelerArrivalConfirmedAt).not.toBeNull();
+  });
+
+  // ---- judgeEscortNoShow ----
+
+  it("미인증 사용자는 노쇼 판정을 할 수 없다", async () => {
+    const escortId = await seedEscort({
+      guideId: "ns-g",
+      travelerId: "ns-t",
+      status: "MeetingConfirmed",
+      meetingTime: meetingPast31(),
+    });
+    await expect(
+      runCallable<JudgeNoShowOutput>(
+        judgeEscortNoShow,
+        buildRequest(undefined, {escortId})
+      )
+    ).rejects.toThrow();
+  });
+
+  it("당사자가 아니면 노쇼 판정을 할 수 없다", async () => {
+    const escortId = await seedEscort({
+      guideId: "ns-perm-g",
+      travelerId: "ns-perm-t",
+      status: "MeetingConfirmed",
+      meetingTime: meetingPast31(),
+    });
+    await expect(
+      runCallable<JudgeNoShowOutput>(
+        judgeEscortNoShow,
+        buildRequest("ns-stranger", {escortId})
+      )
+    ).rejects.toMatchObject({code: "permission-denied"});
+  });
+
+  it("MeetingConfirmed가 아니면 노쇼 판정 불가", async () => {
+    const escortId = await seedEscort({
+      guideId: "ns-st-g",
+      travelerId: "ns-st-t",
+      status: "InProgress",
+      meetingTime: meetingPast31(),
+    });
+    await expect(
+      runCallable<JudgeNoShowOutput>(
+        judgeEscortNoShow,
+        buildRequest("ns-st-g", {escortId})
+      )
+    ).rejects.toMatchObject({code: "failed-precondition"});
+  });
+
+  it("meetingTime이 없으면 노쇼 판정 불가", async () => {
+    const escortId = await seedEscort({
+      guideId: "ns-nomt-g",
+      travelerId: "ns-nomt-t",
+      status: "MeetingConfirmed",
+    });
+    await expect(
+      runCallable<JudgeNoShowOutput>(
+        judgeEscortNoShow,
+        buildRequest("ns-nomt-g", {escortId})
+      )
+    ).rejects.toMatchObject({code: "failed-precondition"});
+  });
+
+  it("약속 + 30분 전이면 노쇼 판정 불가", async () => {
+    const escortId = await seedEscort({
+      guideId: "ns-early-g",
+      travelerId: "ns-early-t",
+      status: "MeetingConfirmed",
+      meetingTime: meetingFuture(),
+    });
+    await expect(
+      runCallable<JudgeNoShowOutput>(
+        judgeEscortNoShow,
+        buildRequest("ns-early-g", {escortId})
+      )
+    ).rejects.toMatchObject({code: "failed-precondition"});
+  });
+
+  it("guide만 확인했고 traveler 미확인이면 traveler 노쇼", async () => {
+    await seedUser("ns-only-t", 0);
+    const escortId = await seedEscort({
+      guideId: "ns-only-g",
+      travelerId: "ns-only-t",
+      status: "MeetingConfirmed",
+      meetingTime: meetingPast31(),
+      guideArrivalConfirmedAt: Timestamp.now(),
+    });
+    const result = await runCallable<JudgeNoShowOutput>(
+      judgeEscortNoShow,
+      buildRequest("ns-only-g", {escortId})
+    );
+    expect(result.status).toBe("NoShow");
+    expect(result.noShowBy).toEqual(["traveler"]);
+
+    const escort = (await db.collection("escorts").doc(escortId).get()).data();
+    expect(escort?.status).toBe("NoShow");
+    const t = (await db.collection("users").doc("ns-only-t").get()).data();
+    expect(t?.noShowCount).toBe(1);
+  });
+
+  it("traveler만 확인했고 guide 미확인이면 guide 노쇼", async () => {
+    await seedUser("ns-onlyg-g", 0);
+    const escortId = await seedEscort({
+      guideId: "ns-onlyg-g",
+      travelerId: "ns-onlyg-t",
+      status: "MeetingConfirmed",
+      meetingTime: meetingPast31(),
+      travelerArrivalConfirmedAt: Timestamp.now(),
+    });
+    const result = await runCallable<JudgeNoShowOutput>(
+      judgeEscortNoShow,
+      buildRequest("ns-onlyg-t", {escortId})
+    );
+    expect(result.noShowBy).toEqual(["guide"]);
+    const g = (await db.collection("users").doc("ns-onlyg-g").get()).data();
+    expect(g?.noShowCount).toBe(1);
+  });
+
+  it("둘 다 미확인이면 둘 다 노쇼", async () => {
+    await seedUser("ns-both-g", 0);
+    await seedUser("ns-both-t", 0);
+    const escortId = await seedEscort({
+      guideId: "ns-both-g",
+      travelerId: "ns-both-t",
+      status: "MeetingConfirmed",
+      meetingTime: meetingPast31(),
+    });
+    const result = await runCallable<JudgeNoShowOutput>(
+      judgeEscortNoShow,
+      buildRequest("ns-both-g", {escortId})
+    );
+    expect(result.noShowBy).toEqual(["guide", "traveler"]);
+    const g = (await db.collection("users").doc("ns-both-g").get()).data();
+    const t = (await db.collection("users").doc("ns-both-t").get()).data();
+    expect(g?.noShowCount).toBe(1);
+    expect(t?.noShowCount).toBe(1);
+  });
+
+  it("둘 다 확인했으면 노쇼 판정 불가", async () => {
+    const escortId = await seedEscort({
+      guideId: "ns-done-g",
+      travelerId: "ns-done-t",
+      status: "MeetingConfirmed",
+      meetingTime: meetingPast31(),
+      guideArrivalConfirmedAt: Timestamp.now(),
+      travelerArrivalConfirmedAt: Timestamp.now(),
+    });
+    await expect(
+      runCallable<JudgeNoShowOutput>(
+        judgeEscortNoShow,
+        buildRequest("ns-done-g", {escortId})
+      )
+    ).rejects.toMatchObject({code: "failed-precondition"});
+  });
+
+  it("노쇼 누적이 3회 이상이면 matchBlockedUntil이 설정된다", async () => {
+    await seedUser("ns-block-t", 2); // 이번 판정으로 3회
+    const escortId = await seedEscort({
+      guideId: "ns-block-g",
+      travelerId: "ns-block-t",
+      status: "MeetingConfirmed",
+      meetingTime: meetingPast31(),
+      guideArrivalConfirmedAt: Timestamp.now(),
+    });
+    await runCallable<JudgeNoShowOutput>(
+      judgeEscortNoShow,
+      buildRequest("ns-block-g", {escortId})
+    );
+    const t = (await db.collection("users").doc("ns-block-t").get()).data();
+    expect(t?.noShowCount).toBe(3);
+    expect(t?.matchBlockedUntil).not.toBeNull();
+  });
+
+  // ---- checkArrival ----
+
+  it("checkArrival은 도착 상태와 판정 가능 여부를 반환한다", async () => {
+    const escortId = await seedEscort({
+      guideId: "ca-g",
+      travelerId: "ca-t",
+      status: "MeetingConfirmed",
+      meetingTime: meetingPast31(),
+      guideArrivalConfirmedAt: Timestamp.now(),
+    });
+    const result = await runCallable<CheckArrivalOutput>(
+      checkArrival,
+      buildRequest("ca-g", {escortId})
+    );
+    expect(result.guideArrivalConfirmed).toBe(true);
+    expect(result.travelerArrivalConfirmed).toBe(false);
+    expect(result.canJudgeNoShow).toBe(true);
+    expect(typeof result.meetingTime).toBe("string");
+  });
+
+  it("checkArrival은 당사자가 아니면 거부된다", async () => {
+    const escortId = await seedEscort({
+      guideId: "ca-perm-g",
+      travelerId: "ca-perm-t",
+      status: "MeetingConfirmed",
+      meetingTime: meetingPast31(),
+    });
+    await expect(
+      runCallable<CheckArrivalOutput>(
+        checkArrival,
+        buildRequest("ca-stranger", {escortId})
+      )
+    ).rejects.toMatchObject({code: "permission-denied"});
+  });
+
+  // ---- cancelEscort 당일 취소 패널티 ----
+
+  it("당일 취소 시 취소자 noShowCount가 증가한다", async () => {
+    await seedUser("cp-t", 0);
+    const escortId = await seedEscort({
+      guideId: "cp-g",
+      travelerId: "cp-t",
+      status: "MeetingConfirmed",
+      meetingTime: Timestamp.now(),
+    });
+    await runCallable<CancelEscortOutput>(
+      cancelEscort,
+      buildRequest("cp-t", {escortId})
+    );
+    const t = (await db.collection("users").doc("cp-t").get()).data();
+    expect(t?.noShowCount).toBe(1);
+  });
+
+  it("당일 취소 누적 3회 이상이면 matchBlockedUntil 설정", async () => {
+    await seedUser("cp-block-g", 2);
+    const escortId = await seedEscort({
+      guideId: "cp-block-g",
+      travelerId: "cp-block-t",
+      status: "MeetingConfirmed",
+      meetingTime: Timestamp.now(),
+    });
+    await runCallable<CancelEscortOutput>(
+      cancelEscort,
+      buildRequest("cp-block-g", {escortId})
+    );
+    const g = (await db.collection("users").doc("cp-block-g").get()).data();
+    expect(g?.noShowCount).toBe(3);
+    expect(g?.matchBlockedUntil).not.toBeNull();
   });
 });
