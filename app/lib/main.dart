@@ -3,6 +3,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/material.dart';
 
+import 'dev/emulator_account_switcher.dart';
 import 'firebase_options.dart';
 import 'screens/admin_approval_screen.dart';
 import 'screens/archive_list_screen.dart';
@@ -94,7 +95,14 @@ class HomeScreen extends StatelessWidget {
           ),
         ],
       ),
-      body: const GuideStatusView(),
+      body: Column(
+        children: [
+          // USE_EMULATOR=true(컴파일 타임 const)일 때만 포함된다. 일반/배포
+          // 빌드에서는 트리쉐이킹으로 스위처와 로그인 로직이 모두 제거된다.
+          if (_useEmulator) const EmulatorAccountSwitcher(),
+          const Expanded(child: GuideStatusView()),
+        ],
+      ),
     );
   }
 }
