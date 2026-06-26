@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../services/guide_service.dart';
 import 'archive_create_screen.dart';
+import 'received_escort_requests_screen.dart';
 
 /// 동네 지식 탭에서 안내자 신청 상태에 따라 UI를 분기하는 위젯.
 ///
@@ -82,6 +83,15 @@ class _GuideStatusViewState extends State<GuideStatusView> {
     );
   }
 
+  /// 받은 동행 요청 화면으로 이동한다(approved 상태 전용).
+  Future<void> _openReceivedRequests() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const ReceivedEscortRequestsScreen(),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) {
@@ -116,9 +126,19 @@ class _GuideStatusViewState extends State<GuideStatusView> {
       case GuideApplicationViewStatus.pending:
         return const Text('신청 대기 중');
       case GuideApplicationViewStatus.approved:
-        return ElevatedButton(
-          onPressed: _openArchiveCreate,
-          child: const Text('등록하기'),
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ElevatedButton(
+              onPressed: _openArchiveCreate,
+              child: const Text('등록하기'),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton(
+              onPressed: _openReceivedRequests,
+              child: const Text('받은 동행 요청 보기'),
+            ),
+          ],
         );
       case GuideApplicationViewStatus.rejected:
         return Column(
