@@ -8,6 +8,8 @@ import {
   CreateGroupOutput,
   DissolveGroupInput,
   DissolveGroupOutput,
+  GetGroupInput,
+  GetGroupOutput,
   InviteToGroupInput,
   InviteToGroupOutput,
   RespondToGroupInviteInput,
@@ -16,6 +18,8 @@ import {
   RespondToSuggestionOutput,
   SuggestGroupInput,
   SuggestGroupOutput,
+  UpdateGroupInput,
+  UpdateGroupOutput,
 } from "./types";
 
 /**
@@ -429,6 +433,93 @@ export const respondToGroupInvite = onCall<
 
     return {status: "accepted"};
   });
+});
+
+/**
+ * US#49 / Slice 12: 소모임 정보 수정(카카오톡 오픈채팅 링크 포함).
+ * 개설 안내자만 수정 가능. 해산된 소모임은 수정 불가.
+ */
+export const updateGroup = onCall<
+  UpdateGroupInput, Promise<UpdateGroupOutput>
+>(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "로그인이 필요합니다.");
+  }
+
+  const {groupId, kakaoOpenChatUrl, frequency, timeOfDay} = request.data;
+  if (!groupId) {
+    throw new HttpsError("invalid-argument", "groupId가 필요합니다.");
+  }
+
+  const callerUid = request.auth.uid;
+  const db = admin.firestore();
+  const groupRef = db.collection("groups").doc(groupId);
+
+  const snap = await groupRef.get();
+  if (!snap.exists) {
+    throw new HttpsError("not-found", "소모임을 찾을 수 없습니다.");
+  }
+
+  const group = {id: snap.id, ...snap.data()} as Group;
+
+  if (group.guideId !== callerUid) {
+    throw new HttpsError("permission-denied", "개설 안내자만 수정할 수 있습니다.");
+  }
+
+  if (group.dissolved) {
+    throw new HttpsError("failed-precondition", "해산된 소모임은 수정할 수 없습니다.");
+  }
+
+  const updates: Record<string, unknown> = {updatedAt: Timestamp.now()};
+  // kakaoOpenChatUrl은 null로 명시하면 삭제, 문자열이면 등록/변경
+  if (kakaoOpenChatUrl !== undefined) updates.kakaoOpenChatUrl = kakaoOpenChatUrl;
+  if (frequency !== undefined) updates.frequency = frequency;
+  if (timeOfDay !== undefined) updates.timeOfDay = timeOfDay;
+
+  await groupRef.update(updates);
+
+  return {updated: true};
+});
+
+/**
+ * US#49 / Slice 12: 소모임 상세 조회. 멤버 전원에게 kakaoOpenChatUrl 노출.
+ * 멤버 외 접근 불가.
+ */
+export const getGroup = onCall<
+  GetGroupInput, Promise<GetGroupOutput>
+>(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "로그인이 필요합니다.");
+  }
+
+  const {groupId} = request.data;
+  if (!groupId) {
+    throw new HttpsError("invalid-argument", "groupId가 필요합니다.");
+  }
+
+  const callerUid = request.auth.uid;
+  const db = admin.firestore();
+  const snap = await db.collection("groups").doc(groupId).get();
+
+  if (!snap.exists) {
+    throw new HttpsError("not-found", "소모임을 찾을 수 없습니다.");
+  }
+
+  const group = {id: snap.id, ...snap.data()} as Group;
+
+  if (!group.memberIds.includes(callerUid)) {
+    throw new HttpsError("permission-denied", "소모임 멤버만 조회할 수 있습니다.");
+  }
+
+  return {
+    groupId: group.id,
+    guideId: group.guideId,
+    memberIds: group.memberIds,
+    frequency: group.frequency,
+    timeOfDay: group.timeOfDay,
+    kakaoOpenChatUrl: group.kakaoOpenChatUrl,
+    dissolved: group.dissolved,
+  };
 });
 
 /**

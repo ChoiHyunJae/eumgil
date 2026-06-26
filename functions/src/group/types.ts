@@ -68,6 +68,37 @@ export interface RespondToGroupInviteOutput {
 }
 
 /**
+ * US#49 / Slice 12: 소모임 정보 수정(카카오톡 링크 포함).
+ * 개설 안내자만 호출 가능. kakaoOpenChatUrl 외 frequency/timeOfDay도 수정 가능.
+ */
+export interface UpdateGroupInput {
+  groupId: string;
+  kakaoOpenChatUrl?: string | null;
+  frequency?: GroupFrequency;
+  timeOfDay?: GroupTimeOfDay;
+}
+export interface UpdateGroupOutput {
+  updated: true;
+}
+
+/**
+ * US#49 / Slice 12: 소모임 상세 조회.
+ * 멤버만 조회 가능. 등록된 kakaoOpenChatUrl이 포함된다.
+ */
+export interface GetGroupInput {
+  groupId: string;
+}
+export interface GetGroupOutput {
+  groupId: string;
+  guideId: string;
+  memberIds: string[];
+  frequency: GroupFrequency;
+  timeOfDay: GroupTimeOfDay;
+  kakaoOpenChatUrl: string | null;
+  dissolved: boolean;
+}
+
+/**
  * US#50: 개설 안내자가 승인 자격을 잃으면 시스템이 자동 해산하지만,
  * 이 stub은 운영/테스트 편의를 위한 수동 해산 경로(안내자 본인 호출)를 정의한다.
  */
