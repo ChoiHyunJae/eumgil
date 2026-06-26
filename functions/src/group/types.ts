@@ -50,6 +50,24 @@ export interface InviteToGroupOutput {
 }
 
 /**
+ * US#46: 기존 탐방자 멤버가 신규 초대에 동의/거절.
+ * inviteToGroup이 생성한 pendingInvite에 대해 기존 멤버가 각각 응답한다.
+ * 전원 동의 시 travelerId가 memberIds에 추가된다.
+ * 1명이라도 거절하면 invite가 rejected로 전환된다.
+ * ⚠️ Slice 11 신규 callable — 팀 합의 필요.
+ */
+export interface RespondToGroupInviteInput {
+  groupId: string;
+  /** 동의/거절 대상인 초대받은 탐방자 uid. */
+  inviteTravelerId: string;
+  accept: boolean;
+}
+export interface RespondToGroupInviteOutput {
+  /** pending: 아직 다른 멤버 동의 대기 중. accepted: 전원 동의 완료. rejected: 누군가 거절. */
+  status: "pending" | "accepted" | "rejected";
+}
+
+/**
  * US#50: 개설 안내자가 승인 자격을 잃으면 시스템이 자동 해산하지만,
  * 이 stub은 운영/테스트 편의를 위한 수동 해산 경로(안내자 본인 호출)를 정의한다.
  */

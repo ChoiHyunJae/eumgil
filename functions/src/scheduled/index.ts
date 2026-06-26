@@ -1,9 +1,11 @@
+import * as admin from "firebase-admin";
+import {Timestamp} from "firebase-admin/firestore";
 import {onSchedule} from "firebase-functions/v2/scheduler";
 
 /**
- * scheduled 모듈 — PRD에서 시간 경과로 자동 트리거되는 3개 규칙.
+ * scheduled 모듈 — PRD에서 시간 경과로 자동 트리거되는 규칙.
  * callable이 아니라 Cloud Scheduler 기반 onSchedule 함수이므로 입출력 타입 계약 대신
- * 트리거 조건을 주석으로 명시한다. 구현은 후속 슬라이스에서 채운다.
+ * 트리거 조건을 주석으로 명시한다.
  */
 
 /**
@@ -36,4 +38,31 @@ export const judgeNoShow = onSchedule("every 5 minutes", async () => {
  */
 export const autoCompleteEscort = onSchedule("every 15 minutes", async () => {
   throw new Error("not implemented");
+});
+
+/**
+ * US#43 / Slice 11: escortPairs.groupSuggestionStatus === "proposed" 이고
+ * suggestionExpiresAt <= now() 인 문서를 "expired"로 전환한다.
+ * 트리거 조건: groupSuggestionStatus == "proposed" AND suggestionExpiresAt <= now().
+ */
+export const expireGroupSuggestions = onSchedule("every 60 minutes", async () => {
+  const db = admin.firestore();
+  const now = Timestamp.now();
+
+  const snap = await db
+    .collection("escortPairs")
+    .where("groupSuggestionStatus", "==", "proposed")
+    .where("suggestionExpiresAt", "<=", now)
+    .get();
+
+  if (snap.empty) return;
+
+  const batch = db.batch();
+  for (const doc of snap.docs) {
+    batch.update(doc.ref, {
+      groupSuggestionStatus: "expired",
+      updatedAt: now,
+    });
+  }
+  await batch.commit();
 });
