@@ -35,6 +35,13 @@ export interface EscortPair {
   respondedAt: Timestamp | null;
   /** US#42: 양쪽 동의로 생성된 group 참조. */
   resultingGroupId: string | null;
+  /**
+   * US#42: respondToSuggestion 양방향 동의 중간 상태 추적.
+   * 안내자/탐방자 각각의 동의 시각. 둘 다 채워지면 소모임 생성.
+   * ⚠️ Slice 11 추가 필드 — 팀 합의 필요.
+   */
+  guideConsentedAt: Timestamp | null;
+  travelerConsentedAt: Timestamp | null;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
