@@ -44,6 +44,14 @@ describe("user module", () => {
     await app.delete();
   });
 
+  /**
+   * 테스트 CallableRequest를 만든다. phoneNumber가 undefined면 미인증 요청.
+   * @param {string} uid 호출자 uid.
+   * @param {string | undefined} phoneNumber 전화번호 인증 토큰(없으면 미인증).
+   * @param {RegisterUserInput | UpdateEmergencyContactInput} data 입력 페이로드.
+   * @return {CallableRequest<RegisterUserInput | UpdateEmergencyContactInput>}
+   *   구성된 요청.
+   */
   function buildRequest(
     uid: string,
     phoneNumber: string | undefined,
@@ -63,6 +71,11 @@ describe("user module", () => {
     } as CallableRequest<RegisterUserInput | UpdateEmergencyContactInput>;
   }
 
+  /**
+   * registerUser v2 onCall 함수를 .run()으로 직접 호출한다.
+   * @param {CallableRequest<RegisterUserInput>} request 전달할 요청.
+   * @return {Promise<RegisterUserOutput>} 호출 결과.
+   */
   function runRegister(request: CallableRequest<RegisterUserInput>) {
     return (registerUser as unknown as {
       run: (
@@ -71,6 +84,11 @@ describe("user module", () => {
     }).run(request);
   }
 
+  /**
+   * updateEmergencyContact v2 onCall 함수를 .run()으로 직접 호출한다.
+   * @param {CallableRequest<UpdateEmergencyContactInput>} request 전달할 요청.
+   * @return {Promise<UpdateEmergencyContactOutput>} 호출 결과.
+   */
   function runUpdate(request: CallableRequest<UpdateEmergencyContactInput>) {
     return (updateEmergencyContact as unknown as {
       run: (
