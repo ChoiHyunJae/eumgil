@@ -8,10 +8,14 @@ import '../services/escort_service.dart';
 /// listMyEscorts로 목록을 조회하고 cancelEscort로 취소한다. confirmMeeting/
 /// checkArrival 등 그 이후 단계는 이번 범위가 아니다.
 class MyEscortScreen extends StatefulWidget {
-  const MyEscortScreen({super.key, this.service});
+  const MyEscortScreen({super.key, this.service, this.currentUserId});
 
   /// 테스트에서 가짜 구현을 주입하기 위한 선택적 의존성. null이면 기본 생성.
   final EscortService? service;
+
+  /// 현재 로그인 사용자 uid. travelerId와 일치하면 만족도 평가 입력을 노출한다.
+  /// null이거나 guide면 평가 입력을 보여주지 않는다(guide가 rating을 보내지 않도록).
+  final String? currentUserId;
 
   @override
   State<MyEscortScreen> createState() => _MyEscortScreenState();
@@ -162,6 +166,7 @@ class _MyEscortScreenState extends State<MyEscortScreen> {
     final cancellable =
         escort.status == 'Accepted' || escort.status == 'MeetingConfirmed';
     final canConfirm = escort.status == 'MeetingConfirmed';
+    final inProgress = escort.status == 'InProgress';
     return Wrap(
       spacing: 8,
       children: [
@@ -180,8 +185,86 @@ class _MyEscortScreenState extends State<MyEscortScreen> {
             onPressed: () => _cancel(escort),
             child: const Text('동행 취소'),
           ),
+        if (inProgress)
+          ElevatedButton(
+            onPressed: () => _complete(escort),
+            child: const Text('동행 완료'),
+          ),
+        if (inProgress)
+          OutlinedButton(
+            onPressed: () => _midTerminate(escort),
+            child: const Text('중도 종료'),
+          ),
       ],
     );
+  }
+
+  bool _isTraveler(MyEscortSummary escort) =>
+      widget.currentUserId != null &&
+      widget.currentUserId == escort.travelerId;
+
+  /// 동행 완료를 확인한다. traveler면 만족도 평가(선택)를 입력받고, guide면
+  /// rating 없이 곧바로 완료 확인한다(guide가 rating을 보내지 않도록).
+  Future<void> _complete(MyEscortSummary escort) async {
+    if (_processing.contains(escort.escortId)) return;
+
+    int? rating;
+    if (_isTraveler(escort)) {
+      final choice = await showDialog<_RatingChoice>(
+        context: context,
+        builder: (_) => const _RatingDialog(),
+      );
+      if (choice == null || !mounted) return; // 취소
+      rating = choice.rating;
+    }
+
+    setState(() => _processing.add(escort.escortId));
+    try {
+      final status = await _service.completeEscort(
+        escortId: escort.escortId,
+        satisfactionRating: rating,
+      );
+      if (!mounted) return;
+      _snack(
+        status == 'Completed' ? '동행이 완료되었습니다.' : '완료 확인했습니다(상대 확인 대기).',
+      );
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      _snack('완료 처리에 실패했습니다: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _processing.remove(escort.escortId));
+      }
+    }
+  }
+
+  /// 동행을 중도 종료한다. 사유(선택)를 다이얼로그로 입력받는다.
+  Future<void> _midTerminate(MyEscortSummary escort) async {
+    if (_processing.contains(escort.escortId)) return;
+    final choice = await showDialog<_ReasonChoice>(
+      context: context,
+      builder: (_) => const _MidTerminateDialog(),
+    );
+    if (choice == null || !mounted) return; // 취소
+
+    setState(() => _processing.add(escort.escortId));
+    try {
+      await _service.midTerminate(
+        escortId: escort.escortId,
+        reason: choice.reason,
+      );
+      if (!mounted) return;
+      _snack('동행을 중도 종료했습니다.');
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      _snack('중도 종료에 실패했습니다: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _processing.remove(escort.escortId));
+      }
+    }
   }
 
   Future<void> _judgeNoShow(MyEscortSummary escort) async {
@@ -325,6 +408,117 @@ class _MeetingLocationDialogState extends State<_MeetingLocationDialog> {
           child: const Text('취소'),
         ),
         ElevatedButton(onPressed: _confirm, child: const Text('확인')),
+      ],
+    );
+  }
+}
+
+/// 동행 완료(traveler) 다이얼로그 결과. rating은 미선택이면 null.
+class _RatingChoice {
+  const _RatingChoice(this.rating);
+
+  final int? rating;
+}
+
+/// 탐방자 만족도 평가(선택, 1~5) 입력 다이얼로그.
+/// "완료"는 선택값을 담은 [_RatingChoice]를, "취소"는 null을 반환한다.
+class _RatingDialog extends StatefulWidget {
+  const _RatingDialog();
+
+  @override
+  State<_RatingDialog> createState() => _RatingDialogState();
+}
+
+class _RatingDialogState extends State<_RatingDialog> {
+  int? _rating;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('동행 완료'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text('만족도 평가(선택)'),
+          const SizedBox(height: 8),
+          DropdownButton<int?>(
+            value: _rating,
+            hint: const Text('선택 안 함'),
+            items: const [
+              DropdownMenuItem(value: null, child: Text('선택 안 함')),
+              DropdownMenuItem(value: 1, child: Text('1')),
+              DropdownMenuItem(value: 2, child: Text('2')),
+              DropdownMenuItem(value: 3, child: Text('3')),
+              DropdownMenuItem(value: 4, child: Text('4')),
+              DropdownMenuItem(value: 5, child: Text('5')),
+            ],
+            onChanged: (value) => setState(() => _rating = value),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('취소'),
+        ),
+        ElevatedButton(
+          onPressed: () => Navigator.of(context).pop(_RatingChoice(_rating)),
+          child: const Text('완료'),
+        ),
+      ],
+    );
+  }
+}
+
+/// 중도 종료 다이얼로그 결과. reason은 미입력이면 null.
+class _ReasonChoice {
+  const _ReasonChoice(this.reason);
+
+  final String? reason;
+}
+
+/// 중도 종료 사유(선택) 입력 다이얼로그.
+/// "확인"은 사유를 담은 [_ReasonChoice]를, "취소"는 null을 반환한다.
+class _MidTerminateDialog extends StatefulWidget {
+  const _MidTerminateDialog();
+
+  @override
+  State<_MidTerminateDialog> createState() => _MidTerminateDialogState();
+}
+
+class _MidTerminateDialogState extends State<_MidTerminateDialog> {
+  final _reasonController = TextEditingController();
+
+  @override
+  void dispose() {
+    _reasonController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('중도 종료'),
+      content: TextField(
+        controller: _reasonController,
+        decoration: const InputDecoration(
+          labelText: '사유(선택)',
+          hintText: '중도 종료 사유를 입력하세요.',
+        ),
+        minLines: 2,
+        maxLines: 4,
+        maxLength: 500,
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('취소'),
+        ),
+        ElevatedButton(
+          onPressed: () =>
+              Navigator.of(context).pop(_ReasonChoice(_reasonController.text)),
+          child: const Text('확인'),
+        ),
       ],
     );
   }

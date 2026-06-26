@@ -81,7 +81,9 @@ class HomeScreen extends StatelessWidget {
             tooltip: '내 동행',
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute<void>(
-                builder: (_) => const MyEscortScreen(),
+                builder: (_) => MyEscortScreen(
+                  currentUserId: FirebaseAuth.instance.currentUser?.uid,
+                ),
               ),
             ),
           ),
