@@ -2,6 +2,7 @@ import * as admin from "firebase-admin";
 import {Timestamp} from "firebase-admin/firestore";
 import {onSchedule} from "firebase-functions/v2/scheduler";
 import {Escort} from "../types";
+import {notifyEscortLifecycle} from "../notifications";
 import {
   applyEscortPenalty,
   NO_SHOW_GRACE_MS,
@@ -129,7 +130,7 @@ export const autoCompleteEscort = onSchedule("every 15 minutes", async () => {
   if (snap.empty) return;
 
   const batch = db.batch();
-  let count = 0;
+  const completed: Array<Pick<Escort, "guideId" | "travelerId">> = [];
   for (const doc of snap.docs) {
     const escort = doc.data() as Omit<Escort, "id">;
     if (now.toMillis() - inProgressStartMs(escort) >= AUTO_COMPLETE_MS) {
@@ -138,10 +139,21 @@ export const autoCompleteEscort = onSchedule("every 15 minutes", async () => {
         autoCompletedAt: now,
         updatedAt: now,
       });
-      count += 1;
+      completed.push({guideId: escort.guideId, travelerId: escort.travelerId});
     }
   }
-  if (count > 0) await batch.commit();
+  if (completed.length === 0) return;
+
+  await batch.commit();
+
+  // 자동 완료된 동행마다 종료 알림(best-effort, 실패가 배치를 깨지 않도록 격리).
+  for (const escort of completed) {
+    try {
+      await notifyEscortLifecycle(escort, "ended");
+    } catch (e) {
+      console.error("[notify] autoComplete 종료 알림 실패:", e);
+    }
+  }
 });
 
 /**
