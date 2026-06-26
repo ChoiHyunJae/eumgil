@@ -1,9 +1,10 @@
 import * as admin from "firebase-admin";
-import {Timestamp} from "firebase-admin/firestore";
+import {GeoPoint, Timestamp} from "firebase-admin/firestore";
 import type {CallableRequest} from "firebase-functions/v2/https";
-import {cancelEscort, listMyEscorts} from "../src/escort";
+import {cancelEscort, confirmMeeting, listMyEscorts} from "../src/escort";
 import type {
   CancelEscortOutput,
+  ConfirmMeetingOutput,
   ListMyEscortsOutput,
 } from "../src/escort/types";
 
@@ -77,7 +78,10 @@ describe("escort module", () => {
     travelerId: string;
     status: string;
     meetingTime?: Timestamp | null;
+    meetingLocation?: GeoPoint | null;
     requestedAt?: Timestamp;
+    guideArrivalConfirmedAt?: Timestamp | null;
+    travelerArrivalConfirmedAt?: Timestamp | null;
   }): Promise<string> {
     const now = Timestamp.now();
     const ref = db.collection("escorts").doc();
@@ -88,14 +92,14 @@ describe("escort module", () => {
       requestedAt: fields.requestedAt ?? now,
       respondedAt: now,
       requestExpiresAt: Timestamp.fromMillis(now.toMillis() + 3600_000),
-      meetingLocation: null,
+      meetingLocation: fields.meetingLocation ?? null,
       meetingTime: fields.meetingTime ?? null,
       cancelledBy: null,
       cancelledAt: null,
       isSameDayCancellation: null,
       noShowBy: [],
-      guideArrivalConfirmedAt: null,
-      travelerArrivalConfirmedAt: null,
+      guideArrivalConfirmedAt: fields.guideArrivalConfirmedAt ?? null,
+      travelerArrivalConfirmedAt: fields.travelerArrivalConfirmedAt ?? null,
       midTerminatedBy: null,
       midTerminatedAt: null,
       guideCompletedAt: null,
@@ -281,5 +285,141 @@ describe("escort module", () => {
         buildRequest(undefined, {escortId: "x"})
       )
     ).rejects.toThrow();
+  });
+
+  // ---- confirmMeeting ----
+
+  /** 만남 장소(서울시청). */
+  const MEET = new GeoPoint(37.5665, 126.978);
+  /** MEET에서 약 60m(50m 초과). */
+  const FAR = {lat: 37.5671, lng: 126.978};
+
+  it("미인증 사용자는 만남 확인을 할 수 없다", async () => {
+    const escortId = await seedEscort({
+      guideId: "cm-g",
+      travelerId: "cm-t",
+      status: "MeetingConfirmed",
+      meetingLocation: MEET,
+    });
+    await expect(
+      runCallable<ConfirmMeetingOutput>(
+        confirmMeeting,
+        buildRequest(undefined, {
+          escortId,
+          location: {lat: 37.5665, lng: 126.978},
+        })
+      )
+    ).rejects.toThrow();
+  });
+
+  it("당사자가 아니면 만남 확인을 할 수 없다", async () => {
+    const escortId = await seedEscort({
+      guideId: "cm-perm-g",
+      travelerId: "cm-perm-t",
+      status: "MeetingConfirmed",
+      meetingLocation: MEET,
+    });
+    await expect(
+      runCallable<ConfirmMeetingOutput>(
+        confirmMeeting,
+        buildRequest("cm-stranger", {
+          escortId,
+          location: {lat: 37.5665, lng: 126.978},
+        })
+      )
+    ).rejects.toMatchObject({code: "permission-denied"});
+  });
+
+  it("MeetingConfirmed가 아니면 거부된다", async () => {
+    const escortId = await seedEscort({
+      guideId: "cm-st-g",
+      travelerId: "cm-st-t",
+      status: "InProgress",
+      meetingLocation: MEET,
+    });
+    await expect(
+      runCallable<ConfirmMeetingOutput>(
+        confirmMeeting,
+        buildRequest("cm-st-g", {
+          escortId,
+          location: {lat: 37.5665, lng: 126.978},
+        })
+      )
+    ).rejects.toMatchObject({code: "failed-precondition"});
+  });
+
+  it("만남 장소에서 50m 초과면 거부된다", async () => {
+    const escortId = await seedEscort({
+      guideId: "cm-far-g",
+      travelerId: "cm-far-t",
+      status: "MeetingConfirmed",
+      meetingLocation: MEET,
+    });
+    await expect(
+      runCallable<ConfirmMeetingOutput>(
+        confirmMeeting,
+        buildRequest("cm-far-g", {escortId, location: FAR})
+      )
+    ).rejects.toMatchObject({code: "failed-precondition"});
+  });
+
+  it("유효하지 않은 좌표는 invalid-argument", async () => {
+    const escortId = await seedEscort({
+      guideId: "cm-inv-g",
+      travelerId: "cm-inv-t",
+      status: "MeetingConfirmed",
+      meetingLocation: MEET,
+    });
+    await expect(
+      runCallable<ConfirmMeetingOutput>(
+        confirmMeeting,
+        buildRequest("cm-inv-g", {escortId, location: {lat: "x", lng: 1}})
+      )
+    ).rejects.toMatchObject({code: "invalid-argument"});
+  });
+
+  it("guide 한쪽만 확인하면 MeetingConfirmed 유지 + 시각 기록", async () => {
+    const escortId = await seedEscort({
+      guideId: "cm-one-g",
+      travelerId: "cm-one-t",
+      status: "MeetingConfirmed",
+      meetingLocation: MEET,
+    });
+    const result = await runCallable<ConfirmMeetingOutput>(
+      confirmMeeting,
+      buildRequest("cm-one-g", {
+        escortId,
+        location: {lat: 37.5665, lng: 126.978},
+      })
+    );
+    expect(result.status).toBe("MeetingConfirmed");
+
+    const data = (await db.collection("escorts").doc(escortId).get()).data();
+    expect(data?.status).toBe("MeetingConfirmed");
+    expect(data?.guideArrivalConfirmedAt).not.toBeNull();
+    expect(data?.travelerArrivalConfirmedAt).toBeNull();
+  });
+
+  it("양쪽 모두 확인하면 InProgress로 전환 + 시각 기록", async () => {
+    const escortId = await seedEscort({
+      guideId: "cm-both-g",
+      travelerId: "cm-both-t",
+      status: "MeetingConfirmed",
+      meetingLocation: MEET,
+      guideArrivalConfirmedAt: Timestamp.now(),
+    });
+    const result = await runCallable<ConfirmMeetingOutput>(
+      confirmMeeting,
+      buildRequest("cm-both-t", {
+        escortId,
+        location: {lat: 37.5665, lng: 126.978},
+      })
+    );
+    expect(result.status).toBe("InProgress");
+
+    const data = (await db.collection("escorts").doc(escortId).get()).data();
+    expect(data?.status).toBe("InProgress");
+    expect(data?.guideArrivalConfirmedAt).not.toBeNull();
+    expect(data?.travelerArrivalConfirmedAt).not.toBeNull();
   });
 });

@@ -9,6 +9,7 @@ class _FakeEscortService extends EscortService {
 
   List<MyEscortSummary> _items;
   final List<String> cancelled = [];
+  final List<String> confirmed = [];
 
   @override
   Future<List<MyEscortSummary>> listMyEscorts() async => _items;
@@ -17,6 +18,29 @@ class _FakeEscortService extends EscortService {
   Future<void> cancelEscort({required String escortId}) async {
     cancelled.add(escortId);
     _items = _items.where((e) => e.escortId != escortId).toList();
+  }
+
+  @override
+  Future<String> confirmMeeting({
+    required String escortId,
+    required double lat,
+    required double lng,
+  }) async {
+    confirmed.add(escortId);
+    _items = _items
+        .map(
+          (e) => e.escortId == escortId
+              ? MyEscortSummary(
+                  escortId: e.escortId,
+                  guideId: e.guideId,
+                  travelerId: e.travelerId,
+                  status: 'InProgress',
+                  meetingTime: e.meetingTime,
+                )
+              : e,
+        )
+        .toList();
+    return 'InProgress';
   }
 }
 
@@ -74,5 +98,37 @@ void main() {
 
     expect(fake.cancelled, contains('esc-1'));
     expect(find.text('진행 중인 동행이 없습니다.'), findsOneWidget);
+  });
+
+  testWidgets('MeetingConfirmed 카드에서 만났어요로 confirmMeeting 호출 후 목록 갱신', (
+    tester,
+  ) async {
+    final fake = _FakeEscortService([
+      const MyEscortSummary(
+        escortId: 'esc-1',
+        guideId: 'guide-1',
+        travelerId: 'traveler-1',
+        status: 'MeetingConfirmed',
+      ),
+    ]);
+
+    await tester.pumpWidget(
+      MaterialApp(home: MyEscortScreen(service: fake)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('만났어요'), findsOneWidget);
+    await tester.tap(find.text('만났어요'));
+    await tester.pumpAndSettle();
+
+    // 위치 입력 다이얼로그가 뜬다.
+    expect(find.text('현재 위치 입력'), findsOneWidget);
+    await tester.enterText(find.byType(TextFormField).at(0), '37.5665');
+    await tester.enterText(find.byType(TextFormField).at(1), '126.9780');
+    await tester.tap(find.text('확인'));
+    await tester.pumpAndSettle();
+
+    expect(fake.confirmed, contains('esc-1'));
+    expect(find.text('상태: InProgress'), findsOneWidget);
   });
 }
