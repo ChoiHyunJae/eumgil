@@ -143,20 +143,167 @@ class _MyEscortScreenState extends State<MyEscortScreen> {
             const SizedBox(height: 12),
             Align(
               alignment: Alignment.centerRight,
-              child: processing
-                  ? const SizedBox(
-                      width: 24,
-                      height: 24,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : OutlinedButton(
-                      onPressed: () => _cancel(escort),
-                      child: const Text('동행 취소'),
-                    ),
+              child: _buildActions(escort, processing),
             ),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildActions(MyEscortSummary escort, bool processing) {
+    if (processing) {
+      return const SizedBox(
+        width: 24,
+        height: 24,
+        child: CircularProgressIndicator(strokeWidth: 2),
+      );
+    }
+    final cancellable =
+        escort.status == 'Accepted' || escort.status == 'MeetingConfirmed';
+    final canConfirm = escort.status == 'MeetingConfirmed';
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (canConfirm)
+          ElevatedButton(
+            onPressed: () => _confirmMeeting(escort),
+            child: const Text('만났어요'),
+          ),
+        if (canConfirm && cancellable) const SizedBox(width: 8),
+        if (cancellable)
+          OutlinedButton(
+            onPressed: () => _cancel(escort),
+            child: const Text('동행 취소'),
+          ),
+      ],
+    );
+  }
+
+  Future<void> _confirmMeeting(MyEscortSummary escort) async {
+    if (_processing.contains(escort.escortId)) return;
+    final loc = await showDialog<_LatLng>(
+      context: context,
+      builder: (_) => const _MeetingLocationDialog(),
+    );
+    if (loc == null || !mounted) return;
+
+    setState(() => _processing.add(escort.escortId));
+    try {
+      final status = await _service.confirmMeeting(
+        escortId: escort.escortId,
+        lat: loc.lat,
+        lng: loc.lng,
+      );
+      if (!mounted) return;
+      _snack(
+        status == 'InProgress' ? '양쪽 확인 완료: 동행을 시작합니다.' : '도착을 확인했습니다.',
+      );
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      _snack('확인에 실패했습니다: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _processing.remove(escort.escortId));
+      }
+    }
+  }
+}
+
+/// 만남 확인 다이얼로그가 반환하는 좌표(검증 통과값).
+class _LatLng {
+  const _LatLng(this.lat, this.lng);
+
+  final double lat;
+  final double lng;
+}
+
+/// "만났어요" 시 현재 위치(lat/lng)를 수동 입력받는 다이얼로그.
+/// GPS 실제 연동은 이번 범위 밖이며, Emulator 검증을 위해 직접 입력받는다.
+/// "확인"은 검증 통과 좌표를, "취소"는 null을 반환한다.
+class _MeetingLocationDialog extends StatefulWidget {
+  const _MeetingLocationDialog();
+
+  @override
+  State<_MeetingLocationDialog> createState() => _MeetingLocationDialogState();
+}
+
+class _MeetingLocationDialogState extends State<_MeetingLocationDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _latController = TextEditingController();
+  final _lngController = TextEditingController();
+
+  @override
+  void dispose() {
+    _latController.dispose();
+    _lngController.dispose();
+    super.dispose();
+  }
+
+  String? _validateNumber(String? value) {
+    if (value == null || value.trim().isEmpty) {
+      return '필수 입력 항목입니다.';
+    }
+    if (double.tryParse(value.trim()) == null) {
+      return '숫자를 입력하세요.';
+    }
+    return null;
+  }
+
+  void _confirm() {
+    if (!_formKey.currentState!.validate()) return;
+    Navigator.of(context).pop(
+      _LatLng(
+        double.parse(_latController.text.trim()),
+        double.parse(_lngController.text.trim()),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('현재 위치 입력'),
+      content: Form(
+        key: _formKey,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextFormField(
+              controller: _latController,
+              decoration: const InputDecoration(
+                labelText: '위도(lat)',
+                hintText: '37.5665',
+              ),
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+                signed: true,
+              ),
+              validator: _validateNumber,
+            ),
+            TextFormField(
+              controller: _lngController,
+              decoration: const InputDecoration(
+                labelText: '경도(lng)',
+                hintText: '126.9780',
+              ),
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+                signed: true,
+              ),
+              validator: _validateNumber,
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('취소'),
+        ),
+        ElevatedButton(onPressed: _confirm, child: const Text('확인')),
+      ],
     );
   }
 }

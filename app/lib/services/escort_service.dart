@@ -55,4 +55,19 @@ class EscortService {
     final callable = _fn.httpsCallable('cancelEscort');
     await callable.call<Map<String, dynamic>>({'escortId': escortId});
   }
+
+  /// 만남 장소 근처(50m 이내)에서 "만났어요"를 확인한다.
+  /// 양쪽 모두 확인되면 백엔드가 InProgress로 전환한다. 반환은 전이 후 상태.
+  Future<String> confirmMeeting({
+    required String escortId,
+    required double lat,
+    required double lng,
+  }) async {
+    final callable = _fn.httpsCallable('confirmMeeting');
+    final result = await callable.call<Map<String, dynamic>>({
+      'escortId': escortId,
+      'location': {'lat': lat, 'lng': lng},
+    });
+    return result.data['status'] as String? ?? '';
+  }
 }
