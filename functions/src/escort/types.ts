@@ -45,6 +45,23 @@ export interface CancelEscortOutput {
   isSameDayCancellation: boolean;
 }
 
+/**
+ * Slice 7: 현재 로그인 사용자가 당사자(guide 또는 traveler)인 진행 중 동행 목록 조회.
+ * 입력은 없으며 request.auth.uid 기준으로 조회한다. 만남 전·중 상태만 반환한다.
+ */
+export type ListMyEscortsInput = Record<string, never>;
+export interface MyEscortSummary {
+  escortId: string;
+  guideId: string;
+  travelerId: string;
+  status: EscortStatus;
+  /** 만남 확정 시각(ISO 8601). 미확정이면 null. */
+  meetingTime: string | null;
+}
+export interface ListMyEscortsOutput {
+  escorts: MyEscortSummary[];
+}
+
 /** US#34: 동행 시작 후 응급 상황 등으로 중도 종료(InProgress → MidTerminated). */
 export interface MidTerminateInput {
   escortId: string;

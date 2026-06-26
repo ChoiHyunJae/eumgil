@@ -9,6 +9,7 @@ import 'screens/admin_approval_screen.dart';
 import 'screens/archive_list_screen.dart';
 import 'screens/guide_search_screen.dart';
 import 'screens/guide_status_view.dart';
+import 'screens/my_escort_screen.dart';
 
 /// 로컬 Firebase Emulator 사용 여부. 컴파일 타임 환경변수로만 켜진다
 /// (`--dart-define=USE_EMULATOR=true`). 기본값 false이므로 실제 배포/일반
@@ -72,6 +73,15 @@ class HomeScreen extends StatelessWidget {
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute<void>(
                 builder: (_) => const GuideSearchScreen(),
+              ),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.directions_walk),
+            tooltip: '내 동행',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const MyEscortScreen(),
               ),
             ),
           ),
