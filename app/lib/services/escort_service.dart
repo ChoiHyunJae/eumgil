@@ -85,13 +85,13 @@ class EscortService {
     required String escortId,
     String? reason,
   }) async {
+    final payload = <String, dynamic>{'escortId': escortId};
     final trimmed = reason?.trim();
-    final hasReason = trimmed != null && trimmed.isNotEmpty;
+    if (trimmed != null && trimmed.isNotEmpty) {
+      payload['reason'] = trimmed;
+    }
     final callable = _fn.httpsCallable('midTerminate');
-    final result = await callable.call<Map<String, dynamic>>({
-      'escortId': escortId,
-      'reason': ?(hasReason ? trimmed : null),
-    });
+    final result = await callable.call<Map<String, dynamic>>(payload);
     return result.data['status'] as String? ?? '';
   }
 
@@ -102,11 +102,12 @@ class EscortService {
     required String escortId,
     int? satisfactionRating,
   }) async {
+    final payload = <String, dynamic>{'escortId': escortId};
+    if (satisfactionRating != null) {
+      payload['satisfactionRating'] = satisfactionRating;
+    }
     final callable = _fn.httpsCallable('completeEscort');
-    final result = await callable.call<Map<String, dynamic>>({
-      'escortId': escortId,
-      'satisfactionRating': ?satisfactionRating,
-    });
+    final result = await callable.call<Map<String, dynamic>>(payload);
     return result.data['status'] as String? ?? '';
   }
 }
