@@ -3,10 +3,33 @@ import {Timestamp} from "firebase-admin/firestore";
 import {HttpsError, onCall} from "firebase-functions/v2/https";
 import {Escort, EscortParty, EscortStatus} from "../types";
 import {
+  EscortNotificationEvent,
+  notifyEscortLifecycle,
+} from "../notifications";
+import {
   applyEscortPenalty,
   NO_SHOW_GRACE_MS,
   noShowParties,
 } from "./penalty";
+
+/**
+ * 동행 생명주기 알림을 best-effort로 발송한다. 알림 실패가 상태 전환 결과를
+ * 깨뜨리지 않도록 모든 예외를 삼킨다.
+ *
+ * @param {Pick<Escort, "guideId" | "travelerId">} escort 대상 동행.
+ * @param {EscortNotificationEvent} event 시작/종료 이벤트.
+ * @return {Promise<void>} 처리 완료 Promise.
+ */
+async function safeNotify(
+  escort: Pick<Escort, "guideId" | "travelerId">,
+  event: EscortNotificationEvent
+): Promise<void> {
+  try {
+    await notifyEscortLifecycle(escort, event);
+  } catch (e) {
+    console.error("[notify] escort lifecycle 알림 실패:", e);
+  }
+}
 import {
   CancelEscortInput,
   CancelEscortOutput,
@@ -211,6 +234,11 @@ export const confirmMeeting = onCall<
     updates.travelerArrivalConfirmedAt = now;
   }
   await ref.update(updates);
+
+  // 양쪽 도착 확인으로 InProgress 전환되는 순간 동행 시작 알림.
+  if (status === "InProgress") {
+    await safeNotify(escort, "started");
+  }
 
   return {status};
 });
@@ -481,6 +509,9 @@ export const midTerminate = onCall<
     updatedAt: now,
   });
 
+  // 중도 종료도 동행 종료 알림 대상이다.
+  await safeNotify(escort, "ended");
+
   return {status: "MidTerminated"};
 });
 
@@ -503,38 +534,8 @@ export const completeEscort = onCall<
     throw new HttpsError("invalid-argument", "escortId가 필요합니다.");
   }
 
-  const uid = request.auth.uid;
-  const ref = admin.firestore().collection("escorts").doc(escortId);
-  const snap = await ref.get();
-  if (!snap.exists) {
-    throw new HttpsError("not-found", "동행을 찾을 수 없습니다.");
-  }
-  const escort = snap.data() as Omit<Escort, "id">;
-  let party: EscortParty;
-  if (escort.guideId === uid) {
-    party = "guide";
-  } else if (escort.travelerId === uid) {
-    party = "traveler";
-  } else {
-    throw new HttpsError(
-      "permission-denied",
-      "본인이 참여한 동행만 완료할 수 있습니다."
-    );
-  }
-  if (escort.status !== "InProgress") {
-    throw new HttpsError(
-      "failed-precondition",
-      "진행 중인 동행만 완료할 수 있습니다."
-    );
-  }
-
+  // 만족도 값 검증(문서 없이 가능한 부분)은 트랜잭션 밖에서 먼저 한다.
   if (satisfactionRating !== undefined) {
-    if (party !== "traveler") {
-      throw new HttpsError(
-        "permission-denied",
-        "만족도 평가는 탐방자만 제출할 수 있습니다."
-      );
-    }
     if (
       typeof satisfactionRating !== "number" ||
       !Number.isInteger(satisfactionRating) ||
@@ -548,27 +549,77 @@ export const completeEscort = onCall<
     }
   }
 
-  const now = Timestamp.now();
-  const guideCompletedAt =
-    party === "guide" ? now : escort.guideCompletedAt;
-  const travelerCompletedAt =
-    party === "traveler" ? now : escort.travelerCompletedAt;
-  const bothCompleted =
-    guideCompletedAt != null && travelerCompletedAt != null;
-  const status: CompleteEscortOutput["status"] = bothCompleted ?
-    "Completed" :
-    "InProgress";
+  const uid = request.auth.uid;
+  const db = admin.firestore();
+  const ref = db.collection("escorts").doc(escortId);
 
-  const updates: Record<string, unknown> = {status, updatedAt: now};
-  if (party === "guide") {
-    updates.guideCompletedAt = now;
-  } else {
-    updates.travelerCompletedAt = now;
-  }
-  if (satisfactionRating !== undefined) {
-    updates.satisfactionRating = satisfactionRating;
-  }
-  await ref.update(updates);
+  // Completed 전환 시 종료 알림을 트랜잭션 커밋 후 보내기 위해 당사자 정보를 캡처한다.
+  let parties: Pick<Escort, "guideId" | "travelerId"> | null = null;
 
-  return {status};
+  // 양쪽이 동시에 완료를 눌러도 Completed 전환을 놓치지 않도록, escort 문서를
+  // 트랜잭션 안에서 읽어 상대방의 최신 완료 시각과 함께 판정한다.
+  const result = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) {
+      throw new HttpsError("not-found", "동행을 찾을 수 없습니다.");
+    }
+    const escort = snap.data() as Omit<Escort, "id">;
+    let party: EscortParty;
+    if (escort.guideId === uid) {
+      party = "guide";
+    } else if (escort.travelerId === uid) {
+      party = "traveler";
+    } else {
+      throw new HttpsError(
+        "permission-denied",
+        "본인이 참여한 동행만 완료할 수 있습니다."
+      );
+    }
+    if (escort.status !== "InProgress") {
+      throw new HttpsError(
+        "failed-precondition",
+        "진행 중인 동행만 완료할 수 있습니다."
+      );
+    }
+    if (satisfactionRating !== undefined && party !== "traveler") {
+      throw new HttpsError(
+        "permission-denied",
+        "만족도 평가는 탐방자만 제출할 수 있습니다."
+      );
+    }
+
+    const now = Timestamp.now();
+    const guideCompletedAt =
+      party === "guide" ? now : escort.guideCompletedAt;
+    const travelerCompletedAt =
+      party === "traveler" ? now : escort.travelerCompletedAt;
+    const bothCompleted =
+      guideCompletedAt != null && travelerCompletedAt != null;
+    const status: CompleteEscortOutput["status"] = bothCompleted ?
+      "Completed" :
+      "InProgress";
+
+    const updates: Record<string, unknown> = {status, updatedAt: now};
+    if (party === "guide") {
+      updates.guideCompletedAt = now;
+    } else {
+      updates.travelerCompletedAt = now;
+    }
+    if (satisfactionRating !== undefined) {
+      updates.satisfactionRating = satisfactionRating;
+    }
+    tx.update(ref, updates);
+
+    if (status === "Completed") {
+      parties = {guideId: escort.guideId, travelerId: escort.travelerId};
+    }
+    return {status};
+  });
+
+  // 양쪽 완료로 Completed가 된 경우에만 종료 알림(커밋 후 best-effort).
+  if (parties) {
+    await safeNotify(parties, "ended");
+  }
+
+  return result;
 });
