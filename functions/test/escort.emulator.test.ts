@@ -1,4 +1,4 @@
-﻿import * as admin from "firebase-admin";
+import * as admin from "firebase-admin";
 import {GeoPoint, Timestamp} from "firebase-admin/firestore";
 import type {CallableRequest} from "firebase-functions/v2/https";
 import {cancelEscort, confirmMeeting, listMyEscorts} from "../src/escort";
@@ -9,8 +9,8 @@ import type {
 } from "../src/escort/types";
 
 /**
- * Slice 7 (escort, Issue #9) ?????숉뻾 議고쉶 / ?쒖옉 ??痍⑥냼 emulator ?뚯뒪??
- * Callable? (fn as unknown as {run}).run(request) 諛⑹떇?쇰줈 吏곸젒 ?몄텧?쒕떎.
+ * Slice 7 (escort, Issue #9) — 내 동행 조회 / 시작 전 취소 emulator 테스트.
+ * Callable은 (fn as unknown as {run}).run(request) 방식으로 직접 호출한다.
  */
 describe("escort module", () => {
   let app: admin.app.App;
@@ -19,8 +19,8 @@ describe("escort module", () => {
   beforeAll(() => {
     if (!process.env.FIRESTORE_EMULATOR_HOST) {
       throw new Error(
-        "FIRESTORE_EMULATOR_HOST媛 ?ㅼ젙?섏뼱 ?덉? ?딆뒿?덈떎. " +
-          "`npm test`(firebase emulators:exec)濡??ㅽ뻾?섏꽭??"
+        "FIRESTORE_EMULATOR_HOST가 설정되어 있지 않습니다. " +
+          "`npm test`(firebase emulators:exec)로 실행하세요."
       );
     }
     app = admin.initializeApp({projectId: "eumgil-test-harness"});
@@ -33,10 +33,10 @@ describe("escort module", () => {
   });
 
   /**
-   * ?뚯뒪??CallableRequest瑜?留뚮뱺?? uid媛 undefined硫?誘몄씤利??붿껌.
-   * @param {string | undefined} uid ?몄텧??uid.
-   * @param {unknown} data ?낅젰 ?섏씠濡쒕뱶.
-   * @return {CallableRequest<unknown>} 援ъ꽦???붿껌.
+   * 테스트 CallableRequest를 만든다. uid가 undefined면 미인증 요청.
+   * @param {string | undefined} uid 호출자 uid.
+   * @param {unknown} data 입력 페이로드.
+   * @return {CallableRequest<unknown>} 구성된 요청.
    */
   function buildRequest(
     uid: string | undefined,
@@ -54,10 +54,10 @@ describe("escort module", () => {
   }
 
   /**
-   * v2 onCall ?⑥닔瑜?.run()?쇰줈 吏곸젒 ?몄텧?쒕떎.
-   * @param {unknown} fn ?몄텧??callable.
-   * @param {CallableRequest<unknown>} request ?꾨떖???붿껌.
-   * @return {Promise<O>} ?몄텧 寃곌낵.
+   * v2 onCall 함수를 .run()으로 직접 호출한다.
+   * @param {unknown} fn 호출할 callable.
+   * @param {CallableRequest<unknown>} request 전달할 요청.
+   * @return {Promise<O>} 호출 결과.
    */
   function runCallable<O>(
     fn: unknown,
@@ -69,9 +69,9 @@ describe("escort module", () => {
   }
 
   /**
-   * escorts/{auto} 臾몄꽌瑜?吏???곹깭濡?留뚮뱺??
-   * @param {object} fields guideId/travelerId/status 諛??좏깮??meetingTime.
-   * @return {Promise<string>} ?앹꽦??escort 臾몄꽌 id.
+   * escorts/{auto} 문서를 지정 상태로 만든다.
+   * @param {object} fields guideId/travelerId/status 및 선택적 meetingTime.
+   * @return {Promise<string>} 생성된 escort 문서 id.
    */
   async function seedEscort(fields: {
     guideId: string;
@@ -113,7 +113,7 @@ describe("escort module", () => {
 
   // ---- listMyEscorts ----
 
-  it("誘몄씤利??ъ슜?먮뒗 ???숉뻾??議고쉶?????녿떎", async () => {
+  it("미인증 사용자는 내 동행을 조회할 수 없다", async () => {
     await expect(
       runCallable<ListMyEscortsOutput>(
         listMyEscorts,
@@ -122,7 +122,7 @@ describe("escort module", () => {
     ).rejects.toThrow();
   });
 
-  it("guide/traveler ?대뒓 履쎌씠??蹂몄씤 愿??吏꾪뻾 以??숉뻾??諛섑솚?쒕떎", async () => {
+  it("guide/traveler 어느 쪽이든 본인 관련 진행 중 동행을 반환한다", async () => {
     const asGuide = await seedEscort({
       guideId: "es-user",
       travelerId: "es-other-t",
@@ -144,7 +144,7 @@ describe("escort module", () => {
     expect(ids).toContain(asTraveler);
   });
 
-  it("吏꾪뻾 以묒씠 ?꾨땶(痍⑥냼/?꾨즺 ?? ?숉뻾? ?쒖쇅?쒕떎", async () => {
+  it("진행 중이 아닌(취소/완료 등) 동행은 제외한다", async () => {
     const guide = "es-status-user";
     const cancelled = await seedEscort({
       guideId: guide,
@@ -166,7 +166,7 @@ describe("escort module", () => {
     expect(ids).not.toContain(completed);
   });
 
-  it("?닿? ?뱀궗?먭? ?꾨땶 ?숉뻾? 諛섑솚?섏? ?딅뒗??, async () => {
+  it("내가 당사자가 아닌 동행은 반환하지 않는다", async () => {
     const other = await seedEscort({
       guideId: "es-g-x",
       travelerId: "es-t-x",
@@ -179,7 +179,7 @@ describe("escort module", () => {
     expect(result.escorts.map((e) => e.escortId)).not.toContain(other);
   });
 
-  it("meetingTime? ISO 臾몄옄???먮뒗 null濡?諛섑솚?쒕떎", async () => {
+  it("meetingTime은 ISO 문자열 또는 null로 반환된다", async () => {
     const withTime = await seedEscort({
       guideId: "es-mt-guide",
       travelerId: "es-mt-t",
@@ -198,7 +198,7 @@ describe("escort module", () => {
 
   // ---- cancelEscort ----
 
-  it("?뱀궗?먮뒗 ?쒖옉 ???숉뻾??痍⑥냼?????덈떎", async () => {
+  it("당사자는 시작 전 동행을 취소할 수 있다", async () => {
     const escortId = await seedEscort({
       guideId: "es-cancel-g",
       travelerId: "es-cancel-t",
@@ -218,7 +218,7 @@ describe("escort module", () => {
     expect(data?.cancelledAt).not.toBeNull();
   });
 
-  it("留뚮궓 ?뱀씪 痍⑥냼??isSameDayCancellation=true", async () => {
+  it("만남 당일 취소는 isSameDayCancellation=true", async () => {
     const escortId = await seedEscort({
       guideId: "es-sameday-g",
       travelerId: "es-sameday-t",
@@ -232,7 +232,7 @@ describe("escort module", () => {
     expect(result.isSameDayCancellation).toBe(true);
   });
 
-  it("?뱀궗?먭? ?꾨땲硫?痍⑥냼?????녿떎", async () => {
+  it("당사자가 아니면 취소할 수 없다", async () => {
     const escortId = await seedEscort({
       guideId: "es-perm-g",
       travelerId: "es-perm-t",
@@ -246,7 +246,7 @@ describe("escort module", () => {
     ).rejects.toMatchObject({code: "permission-denied"});
   });
 
-  it("?쒖옉 ???곹깭媛 ?꾨땲硫?痍⑥냼?????녿떎", async () => {
+  it("시작 전 상태가 아니면 취소할 수 없다", async () => {
     const escortId = await seedEscort({
       guideId: "es-inprog-g",
       travelerId: "es-inprog-t",
@@ -260,7 +260,7 @@ describe("escort module", () => {
     ).rejects.toMatchObject({code: "failed-precondition"});
   });
 
-  it("?녿뒗 escort 痍⑥냼??not-found", async () => {
+  it("없는 escort 취소는 not-found", async () => {
     await expect(
       runCallable<CancelEscortOutput>(
         cancelEscort,
@@ -269,7 +269,7 @@ describe("escort module", () => {
     ).rejects.toMatchObject({code: "not-found"});
   });
 
-  it("escortId媛 ?놁쑝硫?嫄곕??쒕떎", async () => {
+  it("escortId가 없으면 거부된다", async () => {
     await expect(
       runCallable<CancelEscortOutput>(
         cancelEscort,
@@ -278,7 +278,7 @@ describe("escort module", () => {
     ).rejects.toMatchObject({code: "invalid-argument"});
   });
 
-  it("誘몄씤利?痍⑥냼??嫄곕??쒕떎", async () => {
+  it("미인증 취소는 거부된다", async () => {
     await expect(
       runCallable<CancelEscortOutput>(
         cancelEscort,
@@ -289,12 +289,12 @@ describe("escort module", () => {
 
   // ---- confirmMeeting ----
 
-  /** 留뚮궓 ?μ냼(?쒖슱?쒖껌). */
+  /** 만남 장소(서울시청). */
   const MEET = new GeoPoint(37.5665, 126.978);
-  /** MEET?먯꽌 ??60m(50m 珥덇낵). */
+  /** MEET에서 약 60m(50m 초과). */
   const FAR = {lat: 37.5671, lng: 126.978};
 
-  it("誘몄씤利??ъ슜?먮뒗 留뚮궓 ?뺤씤???????녿떎", async () => {
+  it("미인증 사용자는 만남 확인을 할 수 없다", async () => {
     const escortId = await seedEscort({
       guideId: "cm-g",
       travelerId: "cm-t",
@@ -312,7 +312,7 @@ describe("escort module", () => {
     ).rejects.toThrow();
   });
 
-  it("?뱀궗?먭? ?꾨땲硫?留뚮궓 ?뺤씤???????녿떎", async () => {
+  it("당사자가 아니면 만남 확인을 할 수 없다", async () => {
     const escortId = await seedEscort({
       guideId: "cm-perm-g",
       travelerId: "cm-perm-t",
@@ -330,7 +330,7 @@ describe("escort module", () => {
     ).rejects.toMatchObject({code: "permission-denied"});
   });
 
-  it("MeetingConfirmed媛 ?꾨땲硫?嫄곕??쒕떎", async () => {
+  it("MeetingConfirmed가 아니면 거부된다", async () => {
     const escortId = await seedEscort({
       guideId: "cm-st-g",
       travelerId: "cm-st-t",
@@ -348,7 +348,7 @@ describe("escort module", () => {
     ).rejects.toMatchObject({code: "failed-precondition"});
   });
 
-  it("留뚮궓 ?μ냼?먯꽌 50m 珥덇낵硫?嫄곕??쒕떎", async () => {
+  it("만남 장소에서 50m 초과면 거부된다", async () => {
     const escortId = await seedEscort({
       guideId: "cm-far-g",
       travelerId: "cm-far-t",
@@ -363,7 +363,7 @@ describe("escort module", () => {
     ).rejects.toMatchObject({code: "failed-precondition"});
   });
 
-  it("?좏슚?섏? ?딆? 醫뚰몴??invalid-argument", async () => {
+  it("유효하지 않은 좌표는 invalid-argument", async () => {
     const escortId = await seedEscort({
       guideId: "cm-inv-g",
       travelerId: "cm-inv-t",
@@ -378,7 +378,7 @@ describe("escort module", () => {
     ).rejects.toMatchObject({code: "invalid-argument"});
   });
 
-  it("guide ?쒖そ留??뺤씤?섎㈃ MeetingConfirmed ?좎? + ?쒓컖 湲곕줉", async () => {
+  it("guide 한쪽만 확인하면 MeetingConfirmed 유지 + 시각 기록", async () => {
     const escortId = await seedEscort({
       guideId: "cm-one-g",
       travelerId: "cm-one-t",
@@ -400,7 +400,7 @@ describe("escort module", () => {
     expect(data?.travelerArrivalConfirmedAt).toBeNull();
   });
 
-  it("?묒そ 紐⑤몢 ?뺤씤?섎㈃ InProgress濡??꾪솚 + ?쒓컖 湲곕줉", async () => {
+  it("양쪽 모두 확인하면 InProgress로 전환 + 시각 기록", async () => {
     const escortId = await seedEscort({
       guideId: "cm-both-g",
       travelerId: "cm-both-t",
@@ -423,4 +423,3 @@ describe("escort module", () => {
     expect(data?.travelerArrivalConfirmedAt).not.toBeNull();
   });
 });
-
