@@ -1,4 +1,4 @@
-import {EscortStatus} from "../types";
+import {EscortParty, EscortStatus} from "../types";
 
 /**
  * escort 모듈 callable function 계약.
@@ -22,15 +22,32 @@ export interface ConfirmMeetingOutput {
 }
 
 /**
- * US#32: 약속 시간 + 30분 시점 노쇼 판정 결과 조회(주로 스케줄러가 갱신한 상태를 확인하는 용도).
- * 실제 자동 판정은 scheduled/judgeNoShow가 수행한다.
+ * US#32 / Slice 7-3: 동행의 도착 확인 상태와 노쇼 판정 가능 여부를 조회한다.
+ * 당사자만 조회할 수 있다.
  */
 export interface CheckArrivalInput {
   escortId: string;
 }
 export interface CheckArrivalOutput {
   status: EscortStatus;
-  noShowBy: ("guide" | "traveler")[];
+  guideArrivalConfirmed: boolean;
+  travelerArrivalConfirmed: boolean;
+  /** MeetingConfirmed이고 약속+30분 경과, 양쪽 모두 확인은 아님 → 노쇼 판정 가능. */
+  canJudgeNoShow: boolean;
+  /** 만남 확정 시각(ISO 8601). 미확정이면 null. */
+  meetingTime: string | null;
+}
+
+/**
+ * US#32 / Slice 7-3: 약속 시간 + 30분 이후 미확인 당사자를 NoShow로 판정한다.
+ * 당사자만 호출할 수 있으며 MeetingConfirmed 상태에서만 허용한다.
+ */
+export interface JudgeNoShowInput {
+  escortId: string;
+}
+export interface JudgeNoShowOutput {
+  status: "NoShow";
+  noShowBy: EscortParty[];
 }
 
 /**

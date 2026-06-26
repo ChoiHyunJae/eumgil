@@ -10,9 +10,16 @@ class _FakeEscortService extends EscortService {
   List<MyEscortSummary> _items;
   final List<String> cancelled = [];
   final List<String> confirmed = [];
+  final List<String> judged = [];
 
   @override
   Future<List<MyEscortSummary>> listMyEscorts() async => _items;
+
+  @override
+  Future<void> judgeNoShow({required String escortId}) async {
+    judged.add(escortId);
+    _items = _items.where((e) => e.escortId != escortId).toList();
+  }
 
   @override
   Future<void> cancelEscort({required String escortId}) async {
@@ -130,5 +137,28 @@ void main() {
 
     expect(fake.confirmed, contains('esc-1'));
     expect(find.text('상태: InProgress'), findsOneWidget);
+  });
+
+  testWidgets('MeetingConfirmed 카드에서 노쇼 판정을 호출하고 목록을 갱신한다', (tester) async {
+    final fake = _FakeEscortService([
+      const MyEscortSummary(
+        escortId: 'esc-1',
+        guideId: 'guide-1',
+        travelerId: 'traveler-1',
+        status: 'MeetingConfirmed',
+      ),
+    ]);
+
+    await tester.pumpWidget(
+      MaterialApp(home: MyEscortScreen(service: fake)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('노쇼 판정'), findsOneWidget);
+    await tester.tap(find.text('노쇼 판정'));
+    await tester.pumpAndSettle();
+
+    expect(fake.judged, contains('esc-1'));
+    expect(find.text('진행 중인 동행이 없습니다.'), findsOneWidget);
   });
 }

@@ -70,4 +70,12 @@ class EscortService {
     });
     return result.data['status'] as String? ?? '';
   }
+
+  /// 약속 + 30분 이후 미확인 당사자를 노쇼로 판정한다.
+  /// 백엔드 callable 이름은 scheduled judgeNoShow와의 충돌을 피해
+  /// judgeEscortNoShow다. 조건 미충족 시 백엔드가 failed-precondition을 던진다.
+  Future<void> judgeNoShow({required String escortId}) async {
+    final callable = _fn.httpsCallable('judgeEscortNoShow');
+    await callable.call<Map<String, dynamic>>({'escortId': escortId});
+  }
 }

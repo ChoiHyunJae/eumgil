@@ -1,7 +1,10 @@
 import * as admin from "firebase-admin";
 import type {CallableRequest} from "firebase-functions/v2/https";
-import {checkArrival} from "../src/escort";
-import type {CheckArrivalInput, CheckArrivalOutput} from "../src/escort/types";
+import {midTerminate} from "../src/escort";
+import type {
+  MidTerminateInput,
+  MidTerminateOutput,
+} from "../src/escort/types";
 
 /**
  * Slice 0 (Issue #2) 테스트 하니스 검증용 테스트.
@@ -46,14 +49,14 @@ describe("Slice 0 test harness", () => {
   it("escort 모듈의 callable stub을 직접 호출하면 not implemented를 던진다", async () => {
     const request = {
       data: {escortId: "dummy"},
-      rawRequest: {} as CallableRequest<CheckArrivalInput>["rawRequest"],
-    } as CallableRequest<CheckArrivalInput>;
+      rawRequest: {} as CallableRequest<MidTerminateInput>["rawRequest"],
+    } as CallableRequest<MidTerminateInput>;
 
     await expect(
-      (checkArrival as unknown as {
+      (midTerminate as unknown as {
         run: (
-          req: CallableRequest<CheckArrivalInput>
-        ) => Promise<CheckArrivalOutput>;
+          req: CallableRequest<MidTerminateInput>
+        ) => Promise<MidTerminateOutput>;
       }).run(request)
     ).rejects.toThrow("not implemented");
   });

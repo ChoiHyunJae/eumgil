@@ -162,15 +162,19 @@ class _MyEscortScreenState extends State<MyEscortScreen> {
     final cancellable =
         escort.status == 'Accepted' || escort.status == 'MeetingConfirmed';
     final canConfirm = escort.status == 'MeetingConfirmed';
-    return Row(
-      mainAxisSize: MainAxisSize.min,
+    return Wrap(
+      spacing: 8,
       children: [
         if (canConfirm)
           ElevatedButton(
             onPressed: () => _confirmMeeting(escort),
             child: const Text('만났어요'),
           ),
-        if (canConfirm && cancellable) const SizedBox(width: 8),
+        if (canConfirm)
+          TextButton(
+            onPressed: () => _judgeNoShow(escort),
+            child: const Text('노쇼 판정'),
+          ),
         if (cancellable)
           OutlinedButton(
             onPressed: () => _cancel(escort),
@@ -178,6 +182,24 @@ class _MyEscortScreenState extends State<MyEscortScreen> {
           ),
       ],
     );
+  }
+
+  Future<void> _judgeNoShow(MyEscortSummary escort) async {
+    if (_processing.contains(escort.escortId)) return;
+    setState(() => _processing.add(escort.escortId));
+    try {
+      await _service.judgeNoShow(escortId: escort.escortId);
+      if (!mounted) return;
+      _snack('노쇼로 판정했습니다.');
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      _snack('노쇼 판정에 실패했습니다: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _processing.remove(escort.escortId));
+      }
+    }
   }
 
   Future<void> _confirmMeeting(MyEscortSummary escort) async {
