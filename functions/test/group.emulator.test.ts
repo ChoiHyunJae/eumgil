@@ -4,18 +4,22 @@ import type {CallableRequest} from "firebase-functions/v2/https";
 import {
   createGroup,
   dissolveGroup,
+  getGroup,
   inviteToGroup,
   respondToGroupInvite,
   respondToSuggestion,
   suggestGroup,
+  updateGroup,
 } from "../src/group";
 import type {
   CreateGroupOutput,
   DissolveGroupOutput,
+  GetGroupOutput,
   InviteToGroupOutput,
   RespondToGroupInviteOutput,
   RespondToSuggestionOutput,
   SuggestGroupOutput,
+  UpdateGroupOutput,
 } from "../src/group/types";
 
 /**
@@ -562,6 +566,152 @@ describe("group module", () => {
             inviteTravelerId: STRANGER.uid,
             accept: true,
           })
+        )
+      ).rejects.toThrow();
+    });
+  });
+
+  // ─── updateGroup (Slice 12) ───────────────────────────────────
+
+  describe("updateGroup", () => {
+    it("안내자가 kakaoOpenChatUrl을 등록할 수 있다", async () => {
+      const groupId = "update-url-group";
+      await seedGroup(groupId, GUIDE.uid, [GUIDE.uid]);
+
+      const result = await runCallable<UpdateGroupOutput>(
+        updateGroup,
+        buildRequest(GUIDE, {
+          groupId,
+          kakaoOpenChatUrl: "https://open.kakao.com/test-link",
+        })
+      );
+      expect(result.updated).toBe(true);
+
+      const doc = await db.collection("groups").doc(groupId).get();
+      expect(doc.data()?.kakaoOpenChatUrl).toBe("https://open.kakao.com/test-link");
+    });
+
+    it("안내자가 kakaoOpenChatUrl을 null로 삭제할 수 있다", async () => {
+      const groupId = "update-url-null-group";
+      await seedGroup(groupId, GUIDE.uid, [GUIDE.uid]);
+      await db.collection("groups").doc(groupId).update({
+        kakaoOpenChatUrl: "https://open.kakao.com/old",
+      });
+
+      await runCallable<UpdateGroupOutput>(
+        updateGroup,
+        buildRequest(GUIDE, {groupId, kakaoOpenChatUrl: null})
+      );
+
+      const doc = await db.collection("groups").doc(groupId).get();
+      expect(doc.data()?.kakaoOpenChatUrl).toBeNull();
+    });
+
+    it("frequency와 timeOfDay도 함께 수정할 수 있다", async () => {
+      const groupId = "update-freq-group";
+      await seedGroup(groupId, GUIDE.uid, [GUIDE.uid]);
+
+      await runCallable<UpdateGroupOutput>(
+        updateGroup,
+        buildRequest(GUIDE, {
+          groupId,
+          frequency: "MONTHLY",
+          timeOfDay: "AFTERNOON",
+        })
+      );
+
+      const doc = await db.collection("groups").doc(groupId).get();
+      expect(doc.data()?.frequency).toBe("MONTHLY");
+      expect(doc.data()?.timeOfDay).toBe("AFTERNOON");
+    });
+
+    it("안내자가 아닌 멤버는 수정할 수 없다", async () => {
+      const groupId = "update-noperm-group";
+      await seedGroup(groupId, GUIDE.uid, [GUIDE.uid, TRAVELER.uid]);
+
+      await expect(
+        runCallable<UpdateGroupOutput>(
+          updateGroup,
+          buildRequest(TRAVELER, {
+            groupId,
+            kakaoOpenChatUrl: "https://open.kakao.com/hack",
+          })
+        )
+      ).rejects.toThrow();
+
+      const doc = await db.collection("groups").doc(groupId).get();
+      expect(doc.data()?.kakaoOpenChatUrl).toBeNull();
+    });
+
+    it("해산된 소모임은 수정할 수 없다", async () => {
+      const groupId = "update-dissolved-group";
+      await seedGroup(groupId, GUIDE.uid, [GUIDE.uid]);
+      await db.collection("groups").doc(groupId).update({
+        dissolved: true,
+        dissolvedReason: "manual",
+        dissolvedAt: Timestamp.now(),
+      });
+
+      await expect(
+        runCallable<UpdateGroupOutput>(
+          updateGroup,
+          buildRequest(GUIDE, {
+            groupId,
+            kakaoOpenChatUrl: "https://open.kakao.com/test",
+          })
+        )
+      ).rejects.toThrow();
+    });
+  });
+
+  // ─── getGroup (Slice 12) ──────────────────────────────────────
+
+  describe("getGroup", () => {
+    it("멤버는 소모임 정보와 kakaoOpenChatUrl을 조회할 수 있다", async () => {
+      const groupId = "get-group-ok";
+      await seedGroup(groupId, GUIDE.uid, [GUIDE.uid, TRAVELER.uid]);
+      await db.collection("groups").doc(groupId).update({
+        kakaoOpenChatUrl: "https://open.kakao.com/view-link",
+      });
+
+      const result = await runCallable<GetGroupOutput>(
+        getGroup,
+        buildRequest(TRAVELER, {groupId})
+      );
+
+      expect(result.groupId).toBe(groupId);
+      expect(result.kakaoOpenChatUrl).toBe("https://open.kakao.com/view-link");
+      expect(result.memberIds).toContain(TRAVELER.uid);
+    });
+
+    it("링크 미등록 시 kakaoOpenChatUrl은 null이다", async () => {
+      const groupId = "get-group-no-url";
+      await seedGroup(groupId, GUIDE.uid, [GUIDE.uid, TRAVELER.uid]);
+
+      const result = await runCallable<GetGroupOutput>(
+        getGroup,
+        buildRequest(GUIDE, {groupId})
+      );
+      expect(result.kakaoOpenChatUrl).toBeNull();
+    });
+
+    it("멤버가 아닌 사용자는 조회할 수 없다", async () => {
+      const groupId = "get-group-noperm";
+      await seedGroup(groupId, GUIDE.uid, [GUIDE.uid, TRAVELER.uid]);
+
+      await expect(
+        runCallable<GetGroupOutput>(
+          getGroup,
+          buildRequest(STRANGER, {groupId})
+        )
+      ).rejects.toThrow();
+    });
+
+    it("비인증 호출은 거부된다", async () => {
+      await expect(
+        runCallable<GetGroupOutput>(
+          getGroup,
+          buildRequest(undefined, {groupId: "any"})
         )
       ).rejects.toThrow();
     });
