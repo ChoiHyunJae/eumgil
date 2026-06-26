@@ -19,6 +19,24 @@ class GuideCandidateSummary {
   final bool isNewGuide;
 }
 
+/// 안내자가 받은 Requested 동행 요청 한 건.
+///
+/// 백엔드 listReceivedEscortRequests의 항목과 1:1 대응한다. 시각은 ISO 문자열로
+/// 전달되며 여기서 DateTime으로 파싱해 보관한다.
+class ReceivedEscortRequestSummary {
+  const ReceivedEscortRequestSummary({
+    required this.escortId,
+    required this.travelerId,
+    required this.requestedAt,
+    required this.requestExpiresAt,
+  });
+
+  final String escortId;
+  final String travelerId;
+  final DateTime requestedAt;
+  final DateTime requestExpiresAt;
+}
+
 /// 매칭 Cloud Functions callable(searchGuides, requestEscort)을 감싸는 service.
 ///
 /// 기존 service들과 동일하게 [FirebaseFunctions]를 주입 가능하게 하고, 인스턴스는
@@ -60,5 +78,38 @@ class MatchingService {
   Future<void> requestEscort({required String guideId}) async {
     final callable = _fn.httpsCallable('requestEscort');
     await callable.call<Map<String, dynamic>>({'guideId': guideId});
+  }
+
+  /// 본인이 안내자인 Requested(미만료) 동행 요청 목록을 조회한다.
+  Future<List<ReceivedEscortRequestSummary>>
+  listReceivedEscortRequests() async {
+    final callable = _fn.httpsCallable('listReceivedEscortRequests');
+    final result = await callable.call<Map<String, dynamic>>();
+    final raw = (result.data['requests'] as List<dynamic>?) ?? <dynamic>[];
+    return raw.map((dynamic e) => Map<String, dynamic>.from(e as Map)).map((r) {
+      return ReceivedEscortRequestSummary(
+        escortId: r['escortId'] as String? ?? '',
+        travelerId: r['travelerId'] as String? ?? '',
+        requestedAt: DateTime.parse(r['requestedAt'] as String),
+        requestExpiresAt: DateTime.parse(r['requestExpiresAt'] as String),
+      );
+    }).toList();
+  }
+
+  /// 동행 요청을 수락/거절한다. 수락 시 만남 위치/시간은 필수다.
+  Future<void> respondToRequest({
+    required String escortId,
+    required bool accept,
+    double? meetingLat,
+    double? meetingLng,
+    String? meetingTime,
+  }) async {
+    final callable = _fn.httpsCallable('respondToRequest');
+    await callable.call<Map<String, dynamic>>({
+      'escortId': escortId,
+      'accept': accept,
+      if (accept) 'meetingLocation': {'lat': meetingLat, 'lng': meetingLng},
+      if (accept) 'meetingTime': meetingTime,
+    });
   }
 }
