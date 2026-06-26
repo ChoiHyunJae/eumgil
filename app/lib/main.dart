@@ -1,4 +1,6 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/material.dart';
 
 import 'firebase_options.dart';
@@ -7,12 +9,34 @@ import 'screens/archive_list_screen.dart';
 import 'screens/guide_search_screen.dart';
 import 'screens/guide_status_view.dart';
 
+/// 로컬 Firebase Emulator 사용 여부. 컴파일 타임 환경변수로만 켜진다
+/// (`--dart-define=USE_EMULATOR=true`). 기본값 false이므로 실제 배포/일반
+/// 실행에서는 emulator 연결·익명 로그인이 절대 수행되지 않는다.
+const bool _useEmulator = bool.fromEnvironment(
+  'USE_EMULATOR',
+  defaultValue: false,
+);
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
 
+  if (_useEmulator) {
+    await _connectToEmulators();
+  }
+
   runApp(const EumgilApp());
+}
+
+/// 로컬 emulator(Functions/Auth)에 연결하고, 익명 로그인으로 인증을 채운다.
+/// USE_EMULATOR=true일 때만 호출된다.
+Future<void> _connectToEmulators() async {
+  FirebaseFunctions.instance.useFunctionsEmulator('localhost', 5001);
+  await FirebaseAuth.instance.useAuthEmulator('localhost', 9099);
+  if (FirebaseAuth.instance.currentUser == null) {
+    await FirebaseAuth.instance.signInAnonymously();
+  }
 }
 
 /// Slice 0(Issue #2) 스캐폴딩: 빈 홈 화면만 존재하는 앱 골격.
