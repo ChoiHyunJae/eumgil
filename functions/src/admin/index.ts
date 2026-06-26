@@ -2,7 +2,7 @@ import * as admin from "firebase-admin";
 import {Timestamp} from "firebase-admin/firestore";
 import {HttpsError, onCall} from "firebase-functions/v2/https";
 import {assertOperator} from "../shared/guards";
-import {GuideApplication, GuideApplicationStatus} from "../types";
+import {Group, GuideApplication, GuideApplicationStatus} from "../types";
 import {
   ApproveGuideInput,
   ApproveGuideOutput,
@@ -53,7 +53,69 @@ async function syncGuideApplicationStatus(
 }
 
 /**
+ * 안내자가 개설한 모든 비해산 소모임을 자동 해산한다.
+ * Slice 13 (Issue #15): rejectGuide의 cascade 처리.
+ * AC: 권한 위임 없이 종료 — 다른 멤버가 이어받는 경로 없음.
+ *
+ * @param {string} guideId 자격을 잃은 안내자 uid.
+ * @param {Timestamp} now 해산 시각.
+ * @return {Promise<string[]>} 알림 대상 멤버 uid 목록(안내자 본인 제외).
+ */
+async function dissolveGuideGroups(
+  guideId: string,
+  now: Timestamp
+): Promise<string[]> {
+  const db = admin.firestore();
+  const groupsSnap = await db
+    .collection("groups")
+    .where("guideId", "==", guideId)
+    .where("dissolved", "==", false)
+    .get();
+
+  if (groupsSnap.empty) return [];
+
+  const batch = db.batch();
+  const notifySet = new Set<string>();
+
+  for (const doc of groupsSnap.docs) {
+    batch.update(doc.ref, {
+      dissolved: true,
+      dissolvedReason: "guide_unapproved",
+      dissolvedAt: now,
+      updatedAt: now,
+    });
+    const group = doc.data() as Group;
+    for (const memberId of group.memberIds) {
+      if (memberId !== guideId) notifySet.add(memberId);
+    }
+  }
+
+  await batch.commit();
+  return Array.from(notifySet);
+}
+
+/**
+ * 소모임 자동 해산 알림 발송.
+ * TODO: 카카오 알림톡 / FCM 연동 — 외부 알림 API 미구현으로 현재 stub.
+ *
+ * @param {string[]} memberIds 알림 수신 대상 uid 목록.
+ * @param {string} guideId 자격을 잃은 안내자 uid.
+ * @return {Promise<void>}
+ */
+async function notifyGroupDissolution(
+  memberIds: string[],
+  guideId: string
+): Promise<void> {
+  if (memberIds.length === 0) return;
+  // stub: 실제 알림 API 연동 시 여기에 구현
+  console.info(
+    `[stub] 소모임 해산 알림 대상 ${memberIds.length}명 (안내자: ${guideId})`
+  );
+}
+
+/**
  * admin 모듈 — 운영자 전용 안내자 승인/거부, 신고된 동네 지식 숨김.
+ * Slice 13(Issue #15): rejectGuide에 소모임 자동 해산 cascade 추가.
  * Slice 5(Issue #7): hideArchiveItem(숨김), rejectGuide(승인 취소) 구현.
  * Slice 2(Issue #4): approveGuide(안내자 승인), listPendingGuideApplications
  *   (대기 신청 목록) 구현. 승인/거부 시 guideApplications 상태를 동기화한다.
@@ -107,8 +169,13 @@ export const rejectGuide = onCall<
     throw new HttpsError("not-found", "사용자를 찾을 수 없습니다.");
   }
 
-  await ref.update({guideApproved: false, updatedAt: Timestamp.now()});
+  const now = Timestamp.now();
+  await ref.update({guideApproved: false, updatedAt: now});
   await syncGuideApplicationStatus(userId, "rejected", request.auth.uid);
+
+  // Slice 13 (Issue #15): 안내자 자격 상실 시 소모임 자동 해산 cascade.
+  const notifyTargets = await dissolveGuideGroups(userId, now);
+  await notifyGroupDissolution(notifyTargets, userId);
 
   return {guideApproved: false};
 });
