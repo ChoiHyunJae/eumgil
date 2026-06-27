@@ -1,7 +1,12 @@
 import * as admin from "firebase-admin";
 import {GeoPoint, Timestamp} from "firebase-admin/firestore";
 import {HttpsError, onCall} from "firebase-functions/v2/https";
-import {ArchiveCategory, ArchiveItem, UserProfile} from "../types";
+import {
+  ArchiveCategory,
+  ArchiveItem,
+  AuthorProfileSummary,
+  UserProfile,
+} from "../types";
 import {assertGuideApproved} from "../shared/guards";
 import {
   CreateArchiveItemInput,
@@ -29,6 +34,72 @@ const VALID_CATEGORIES: ArchiveCategory[] = ["PLACE", "WALK", "OTHER"];
 
 /** US#12: 노출 반경(3km) 고정값. */
 const VISIBILITY_RADIUS_M = 3000;
+
+/** 역지오코딩 미연동 시 사용하는 행정동 fallback 표시값. */
+const DONG_FALLBACK = "행정동 확인 필요";
+
+/**
+ * MVP 데모용 행정동 bounding box. 외부 reverse geocoding 없이 서울/종로 인근
+ * 데모 좌표를 예측 가능한 행정동 라벨로 매핑한다. 범위 밖은 fallback을 쓴다.
+ */
+const DONG_BOXES: ReadonlyArray<{
+  label: string;
+  minLat: number;
+  maxLat: number;
+  minLng: number;
+  maxLng: number;
+}> = [
+  {
+    label: "종로구 청운효자동 인근",
+    minLat: 37.578,
+    maxLat: 37.595,
+    minLng: 126.965,
+    maxLng: 126.985,
+  },
+  {
+    label: "종로구 사직동 인근",
+    minLat: 37.565,
+    maxLat: 37.578,
+    minLng: 126.96,
+    maxLng: 126.973,
+  },
+  {
+    label: "종로구 광화문·세종로 인근",
+    minLat: 37.568,
+    maxLat: 37.58,
+    minLng: 126.973,
+    maxLng: 126.99,
+  },
+  {
+    label: "종로구 혜화동 인근",
+    minLat: 37.58,
+    maxLat: 37.595,
+    minLng: 126.995,
+    maxLng: 127.01,
+  },
+];
+
+/**
+ * US#13 / Slice 3: 좌표를 행정동 표시값으로 변환한다(외부 API 미연동 MVP).
+ * 데모 bounding box에 들면 해당 행정동 라벨을, 아니면 fallback을 반환한다.
+ *
+ * @param {number} lat 위도.
+ * @param {number} lng 경도.
+ * @return {string} 행정동 표시값(또는 "행정동 확인 필요").
+ */
+function resolveDongLabel(lat: number, lng: number): string {
+  for (const box of DONG_BOXES) {
+    if (
+      lat >= box.minLat &&
+      lat <= box.maxLat &&
+      lng >= box.minLng &&
+      lng <= box.maxLng
+    ) {
+      return box.label;
+    }
+  }
+  return DONG_FALLBACK;
+}
 
 /**
  * 두 좌표 사이의 거리(미터)를 Haversine 공식으로 계산한다.
@@ -117,8 +188,8 @@ export const createArchiveItem = onCall<
     confirmedByAuthor: true,
     photoUrls: photoUrls ?? [],
     exactLocation: new GeoPoint(location.lat, location.lng),
-    // TODO: 역지오코딩 미연동. 임시 fallback이며 연동 후 실제 행정동으로 교체.
-    dongLabel: "행정동 확인 필요",
+    // Slice 3 MVP: 데모 좌표는 행정동 라벨로 매핑, 범위 밖은 fallback.
+    dongLabel: resolveDongLabel(location.lat, location.lng),
     visibilityRadiusM: VISIBILITY_RADIUS_M,
     published: true,
     reportCount: 0,
@@ -326,6 +397,35 @@ export const listNearbyArchiveItems = onCall<
     );
     if (distanceM <= item.visibilityRadiusM) {
       items.push(publicView);
+    }
+  }
+
+  // Slice 3: 작성 안내자 프로필 요약(거주 연차·관심 분야)을 optional로 덧붙인다.
+  const authorIds = [...new Set(items.map((i) => i.authorId))];
+  const db = admin.firestore();
+  const authorSnaps = await Promise.all(
+    authorIds.map((id) => db.collection("users").doc(id).get())
+  );
+  const profileById = new Map<string, AuthorProfileSummary>();
+  authorSnaps.forEach((s, idx) => {
+    if (!s.exists) return;
+    const u = s.data() as Omit<UserProfile, "id">;
+    const summary: AuthorProfileSummary = {};
+    const years = u.residenceYears ?? u.residencyYears;
+    if (typeof years === "number") {
+      summary.residenceYears = years;
+    }
+    if (Array.isArray(u.interests) && u.interests.length > 0) {
+      summary.interests = u.interests;
+    }
+    if (summary.residenceYears !== undefined || summary.interests) {
+      profileById.set(authorIds[idx], summary);
+    }
+  });
+  for (const item of items) {
+    const profile = profileById.get(item.authorId);
+    if (profile) {
+      item.authorProfile = profile;
     }
   }
 

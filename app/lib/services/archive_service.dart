@@ -33,6 +33,8 @@ class ArchiveItemSummary {
     required this.category,
     required this.body,
     this.dongLabel,
+    this.residenceYears,
+    this.interests,
   });
 
   final String id;
@@ -43,6 +45,12 @@ class ArchiveItemSummary {
 
   /// 행정동 단위 위치 표시값(예: "종로구 ○○동 인근"). 없으면 null.
   final String? dongLabel;
+
+  /// 작성 안내자 거주 연차(authorProfile.residenceYears). 없으면 null.
+  final int? residenceYears;
+
+  /// 작성 안내자 관심 분야(authorProfile.interests). 없으면 null.
+  final List<String>? interests;
 }
 
 /// 동네 지식 등록 Cloud Functions callable(createArchiveItem)을 감싸는 service.
@@ -69,13 +77,16 @@ class ArchiveService {
     required double lng,
     List<String>? photoUrls,
   }) async {
-    final callable = _fn.httpsCallable('createArchiveItem');
-    final result = await callable.call<Map<String, dynamic>>({
+    final payload = <String, dynamic>{
       'category': category.wireValue,
       'voiceTranscript': voiceTranscript,
       'location': {'lat': lat, 'lng': lng},
-      'photoUrls': ?photoUrls,
-    });
+    };
+    if (photoUrls != null && photoUrls.isNotEmpty) {
+      payload['photoUrls'] = photoUrls;
+    }
+    final callable = _fn.httpsCallable('createArchiveItem');
+    final result = await callable.call<Map<String, dynamic>>(payload);
     final item = Map<String, dynamic>.from(result.data['item'] as Map);
     return item['id'] as String? ?? '';
   }
@@ -89,22 +100,31 @@ class ArchiveService {
     required double lng,
     ArchiveCategory? category,
   }) async {
-    final callable = _fn.httpsCallable('listNearbyArchiveItems');
-    final result = await callable.call<Map<String, dynamic>>({
+    final payload = <String, dynamic>{
       'location': {'lat': lat, 'lng': lng},
-      'category': ?category?.wireValue,
-    });
+    };
+    if (category != null) {
+      payload['category'] = category.wireValue;
+    }
+    final callable = _fn.httpsCallable('listNearbyArchiveItems');
+    final result = await callable.call<Map<String, dynamic>>(payload);
     final raw = (result.data['items'] as List<dynamic>?) ?? <dynamic>[];
     return raw.map((dynamic e) => Map<String, dynamic>.from(e as Map)).map((
       item,
     ) {
       final summary = (item['aiSummary'] as String?)?.trim();
       final transcript = item['voiceTranscript'] as String? ?? '';
+      final profile = item['authorProfile'] == null
+          ? null
+          : Map<String, dynamic>.from(item['authorProfile'] as Map);
+      final interestsRaw = profile?['interests'] as List<dynamic>?;
       return ArchiveItemSummary(
         id: item['id'] as String? ?? '',
         category: ArchiveCategory.fromWire(item['category'] as String?),
         body: (summary != null && summary.isNotEmpty) ? summary : transcript,
         dongLabel: item['dongLabel'] as String?,
+        residenceYears: (profile?['residenceYears'] as num?)?.toInt(),
+        interests: interestsRaw?.map((e) => e.toString()).toList(),
       );
     }).toList();
   }

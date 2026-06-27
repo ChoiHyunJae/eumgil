@@ -166,13 +166,37 @@ class _ArchiveListScreenState extends State<ArchiveListScreen> {
     );
   }
 
+  /// 작성 안내자 프로필 요약 한 줄(거주 연차·관심 분야). 값이 없으면 null.
+  String? _authorProfileLine(ArchiveItemSummary item) {
+    final parts = <String>[];
+    if (item.residenceYears != null) {
+      parts.add('거주 ${item.residenceYears}년');
+    }
+    if (item.interests != null && item.interests!.isNotEmpty) {
+      parts.add('관심: ${item.interests!.join(', ')}');
+    }
+    return parts.isEmpty ? null : parts.join(' · ');
+  }
+
   Widget _buildItem(ArchiveItemSummary item) {
     final reporting = _reporting.contains(item.id);
+    final profileLine = _authorProfileLine(item);
+    final subtitleLines = <Widget>[
+      if (item.dongLabel != null) Text(item.dongLabel!),
+      if (profileLine != null)
+        Text(profileLine, style: const TextStyle(fontSize: 12)),
+    ];
     return ListTile(
       leading: Chip(label: Text(item.category.label)),
       title: Text(item.body),
-      subtitle: item.dongLabel == null ? null : Text(item.dongLabel!),
-      isThreeLine: item.dongLabel != null,
+      subtitle: subtitleLines.isEmpty
+          ? null
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: subtitleLines,
+            ),
+      isThreeLine: subtitleLines.length > 1,
       trailing: reporting
           ? const SizedBox(
               width: 24,

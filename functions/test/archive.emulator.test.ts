@@ -404,4 +404,96 @@ describe("archive module", () => {
     expect(ids).not.toContain("no-exactlocation"); // 무효 문서는 제외
     expect(ids).toContain("valid-near-place"); // 정상 문서는 그대로 반환
   });
+
+  // ---- Slice 3 보완: dongLabel / authorProfile / 검증 ----
+
+  it("데모 좌표로 등록하면 dongLabel이 행정동 라벨로 저장된다", async () => {
+    await seedUser(GUIDE_A, true);
+    const result = await runCallable<CreateArchiveItemOutput>(
+      createArchiveItem,
+      buildRequest(GUIDE_A, {
+        category: "PLACE",
+        voiceTranscript: "제가 가본 종로 데모 장소",
+        location: {lat: 37.57295, lng: 126.97936},
+      })
+    );
+    expect(result.item.dongLabel).not.toBe("행정동 확인 필요");
+    expect(result.item.dongLabel).toContain("종로구");
+  });
+
+  it("범위 밖 좌표는 dongLabel fallback을 유지한다", async () => {
+    await seedUser(GUIDE_A, true);
+    const result = await runCallable<CreateArchiveItemOutput>(
+      createArchiveItem,
+      buildRequest(GUIDE_A, {
+        category: "PLACE",
+        voiceTranscript: "제가 가본 부산 장소",
+        location: BUSAN,
+      })
+    );
+    expect(result.item.dongLabel).toBe("행정동 확인 필요");
+  });
+
+  it("voiceTranscript 빈 문자열은 거부된다", async () => {
+    await seedUser(GUIDE_A, true);
+    await expect(
+      runCallable<CreateArchiveItemOutput>(
+        createArchiveItem,
+        buildRequest(GUIDE_A, {
+          category: "PLACE",
+          voiceTranscript: "   ",
+          location: BUSAN,
+        })
+      )
+    ).rejects.toMatchObject({code: "invalid-argument"});
+  });
+
+  it("유효하지 않은 category는 거부된다", async () => {
+    await seedUser(GUIDE_A, true);
+    await expect(
+      runCallable<CreateArchiveItemOutput>(
+        createArchiveItem,
+        buildRequest(GUIDE_A, {
+          category: "BAD_CATEGORY",
+          voiceTranscript: "제가 가본 곳",
+          location: BUSAN,
+        })
+      )
+    ).rejects.toMatchObject({code: "invalid-argument"});
+  });
+
+  it("listNearby 응답에 작성자 authorProfile이 포함되고 좌표는 없다", async () => {
+    // 작성자 user 문서에 거주 연차·관심 분야를 둔다.
+    await db.collection("users").doc("archive-author-profile").set({
+      phoneNumber: "+821000000000",
+      emergencyContact: {name: "보호자", phoneNumber: "+821011112222"},
+      guideApproved: true,
+      matchBlockedUntil: null,
+      noShowCount: 0,
+      residenceYears: 10,
+      interests: ["산책", "맛집"],
+      guideStats: {
+        averageSatisfaction: null,
+        totalRequestsReceived: 0,
+        completedEscortCount: 0,
+      },
+      createdAt: Timestamp.now(),
+      updatedAt: Timestamp.now(),
+    });
+    await seedArchiveItem("profile-near-item", {
+      authorId: "archive-author-profile",
+      lat: SEOUL.lat,
+      lng: SEOUL.lng,
+    });
+
+    const result = await runCallable<ListNearbyArchiveItemsOutput>(
+      listNearbyArchiveItems,
+      buildRequest(EXPLORER, {location: SEOUL})
+    );
+    const item = result.items.find((i) => i.id === "profile-near-item");
+    expect(item).toBeDefined();
+    expect(item).not.toHaveProperty("exactLocation");
+    expect(item?.authorProfile?.residenceYears).toBe(10);
+    expect(item?.authorProfile?.interests).toEqual(["산책", "맛집"]);
+  });
 });

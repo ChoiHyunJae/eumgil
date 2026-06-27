@@ -31,6 +31,11 @@ export interface UserProfile {
   noShowCount: number;
   /** US#10: 안내자 프로필 서사 — 거주 기간. */
   residencyYears?: number;
+  /**
+   * US#10 / Slice 3: 동네 지식 카드의 작성자 프로필 요약에 쓰는 거주 연차.
+   * residencyYears와 별개로 명시적 거주 연수 표기용(없으면 residencyYears로 폴백).
+   */
+  residenceYears?: number;
   /** US#10: 안내자 프로필 서사 — 관심 분야. */
   interests?: string[];
   /**

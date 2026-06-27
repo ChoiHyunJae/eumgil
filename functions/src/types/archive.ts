@@ -49,7 +49,19 @@ export interface ArchiveItem {
 export type ArchiveItemOwnerView = ArchiveItem;
 
 /**
+ * US#10 / Slice 3: 동네 지식 카드에 함께 노출하는 작성 안내자 프로필 요약.
+ * 모두 optional이며, 값이 있을 때만 채운다(없으면 authorProfile 자체를 생략).
+ */
+export interface AuthorProfileSummary {
+  residenceYears?: number;
+  interests?: string[];
+}
+
+/**
  * 작성자 외 사용자(탐방자, 다른 안내자)에게 반환되는 뷰.
  * Invariant: exactLocation은 어떤 응답에도 포함하지 않는다.
+ * Slice 3: 작성 안내자 프로필 요약(authorProfile)을 optional로 포함할 수 있다.
  */
-export type ArchiveItemPublicView = Omit<ArchiveItem, "exactLocation">;
+export type ArchiveItemPublicView = Omit<ArchiveItem, "exactLocation"> & {
+  authorProfile?: AuthorProfileSummary;
+};
