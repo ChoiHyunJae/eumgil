@@ -1,7 +1,7 @@
 import * as admin from "firebase-admin";
 import {GeoPoint, Timestamp} from "firebase-admin/firestore";
 import {HttpsError, onCall} from "firebase-functions/v2/https";
-import {Escort, EscortStatus, UserProfile} from "../types";
+import {Escort, EscortStatus, GuideStats, UserProfile} from "../types";
 import {
   GuideCandidate,
   ListReceivedEscortRequestsInput,
@@ -16,14 +16,72 @@ import {
 
 /**
  * matching 모듈 — 위치 스냅샷 기반 안내자 탐색, 동행 요청 생성/응답.
- * Slice 6(Issue #8) 1차 구현: searchGuides, requestEscort, respondToRequest.
+ * Slice 6(Issue #8): searchGuides, requestEscort, respondToRequest.
+ * Slice 10(Issue #12): searchGuides 정렬 고도화(만족도→성사율→거리).
  *
- * 정렬은 거리 오름차순만 적용한다(Slice 10의 만족도/성사율 정렬은 미적용).
  * escort 생명주기(MeetingConfirmed 이후)는 escort 모듈이 담당한다.
  */
 
 /** US#18: 매칭 노출 반경(1km). 동네 지식 노출 반경(3km)보다 좁다. */
 const MATCH_RADIUS_M = 1000;
+
+/**
+ * US#21: 받은 요청 이력이 0건(또는 미존재)이면 신규 안내자.
+ * 신규 안내자는 만족도/성사율 정렬을 건너뛰고 거리 기준만 적용한다.
+ *
+ * @param {GuideStats} stats 안내자 통계.
+ * @return {boolean} 신규 안내자면 true.
+ */
+function isNewGuide(stats: GuideStats): boolean {
+  return (stats.totalRequestsReceived ?? 0) === 0;
+}
+
+/**
+ * US#21,#38: 정렬 1순위로 쓰는 만족도 평균(null-safe).
+ * 평가 데이터(ratedEscortCount>=1 && averageSatisfaction이 number)가 있으면
+ * 그 값을, 없으면 0을 반환해 정렬이 깨지지 않게 한다.
+ *
+ * @param {GuideStats} stats 안내자 통계.
+ * @return {number} 정렬용 만족도 값.
+ */
+function effectiveSatisfaction(stats: GuideStats): number {
+  if (
+    (stats.ratedEscortCount ?? 0) >= 1 &&
+    typeof stats.averageSatisfaction === "number"
+  ) {
+    return stats.averageSatisfaction;
+  }
+  return 0;
+}
+
+/**
+ * US#21: 정렬 2순위로 쓰는 성사율(완료/받은요청). 받은 요청이 0이면 0.
+ *
+ * @param {GuideStats} stats 안내자 통계.
+ * @return {number} 0~1 성사율.
+ */
+function successRate(stats: GuideStats): number {
+  const total = stats.totalRequestsReceived ?? 0;
+  if (total < 1) return 0;
+  return (stats.completedEscortCount ?? 0) / total;
+}
+
+/**
+ * 기존 안내자 정렬 비교: 만족도 내림차순 → 성사율 내림차순 → 거리 오름차순.
+ *
+ * @param {GuideCandidate} a 후보 A.
+ * @param {GuideCandidate} b 후보 B.
+ * @return {number} 정렬 비교값.
+ */
+function compareExistingGuides(a: GuideCandidate, b: GuideCandidate): number {
+  const satA = effectiveSatisfaction(a.guide.guideStats);
+  const satB = effectiveSatisfaction(b.guide.guideStats);
+  if (satA !== satB) return satB - satA;
+  const srA = successRate(a.guide.guideStats);
+  const srB = successRate(b.guide.guideStats);
+  if (srA !== srB) return srB - srA;
+  return a.distanceM - b.distanceM;
+}
 
 /** US#25: 동행 요청 응답 기한(48시간). */
 const REQUEST_TTL_MS = 48 * 60 * 60 * 1000;
@@ -133,12 +191,20 @@ export const searchGuides = onCall<
     candidates.push({
       guide,
       distanceM,
-      isNewGuide: guide.guideStats.totalRequestsReceived === 0,
+      isNewGuide: isNewGuide(guide.guideStats),
     });
   }
 
-  candidates.sort((a, b) => a.distanceM - b.distanceM);
-  return {candidates};
+  // Slice 10: 기존 안내자(요청 1건 이상)는 만족도→성사율→거리로 정렬하고,
+  // 신규 안내자(요청 0건)는 ①②를 건너뛰고 거리순으로 정렬해 뒤에 둔다.
+  const existing = candidates
+    .filter((c) => !c.isNewGuide)
+    .sort(compareExistingGuides);
+  const fresh = candidates
+    .filter((c) => c.isNewGuide)
+    .sort((a, b) => a.distanceM - b.distanceM);
+
+  return {candidates: [...existing, ...fresh]};
 });
 
 /**
