@@ -95,6 +95,9 @@ describe("matching module", () => {
     location?: {lat: number; lng: number} | null;
     matchBlockedUntil?: Timestamp | null;
     totalRequestsReceived?: number;
+    completedEscortCount?: number;
+    averageSatisfaction?: number | null;
+    ratedEscortCount?: number;
   }
 
   /**
@@ -112,6 +115,9 @@ describe("matching module", () => {
       location = NEAR_CLOSE,
       matchBlockedUntil = null,
       totalRequestsReceived = 0,
+      completedEscortCount = 0,
+      averageSatisfaction = null,
+      ratedEscortCount = 0,
     } = options;
     await db.collection("users").doc(id).set({
       phoneNumber: "+821000000000",
@@ -121,9 +127,10 @@ describe("matching module", () => {
       noShowCount: 0,
       guideLocation: location,
       guideStats: {
-        averageSatisfaction: null,
+        averageSatisfaction,
         totalRequestsReceived,
-        completedEscortCount: 0,
+        completedEscortCount,
+        ratedEscortCount,
       },
       createdAt: Timestamp.now(),
       updatedAt: Timestamp.now(),
@@ -263,6 +270,161 @@ describe("matching module", () => {
         buildRequest("sg-traveler4", {})
       )
     ).rejects.toMatchObject({code: "invalid-argument"});
+  });
+
+  // ---- searchGuides 정렬(Slice 10) ----
+
+  /**
+   * 결과에서 특정 guideId의 순위(인덱스)를 반환한다(없으면 -1).
+   * @param {SearchGuidesOutput} result 검색 결과.
+   * @param {string} id guide uid.
+   * @return {number} 후보 목록 내 인덱스.
+   */
+  function rankOf(result: SearchGuidesOutput, id: string): number {
+    return result.candidates.findIndex((c) => c.guide.id === id);
+  }
+
+  it("요청 1건 이상 안내자는 averageSatisfaction 내림차순으로 정렬된다", async () => {
+    await seedGuide("rk1-hi", {
+      totalRequestsReceived: 10,
+      completedEscortCount: 5,
+      averageSatisfaction: 5,
+      ratedEscortCount: 3,
+    });
+    await seedGuide("rk1-mid", {
+      totalRequestsReceived: 10,
+      completedEscortCount: 5,
+      averageSatisfaction: 4,
+      ratedEscortCount: 3,
+    });
+    await seedGuide("rk1-lo", {
+      totalRequestsReceived: 10,
+      completedEscortCount: 5,
+      averageSatisfaction: 3,
+      ratedEscortCount: 3,
+    });
+
+    const r = await runCallable<SearchGuidesOutput>(
+      searchGuides,
+      buildRequest("rk1-trav", {location: SEOUL})
+    );
+    expect(rankOf(r, "rk1-hi")).toBeLessThan(rankOf(r, "rk1-mid"));
+    expect(rankOf(r, "rk1-mid")).toBeLessThan(rankOf(r, "rk1-lo"));
+  });
+
+  it("만족도가 같으면 성사율 내림차순으로 정렬된다", async () => {
+    await seedGuide("rk2-hi", {
+      totalRequestsReceived: 10,
+      completedEscortCount: 8, // 0.8
+      averageSatisfaction: 4,
+      ratedEscortCount: 2,
+    });
+    await seedGuide("rk2-lo", {
+      totalRequestsReceived: 10,
+      completedEscortCount: 4, // 0.4
+      averageSatisfaction: 4,
+      ratedEscortCount: 2,
+    });
+
+    const r = await runCallable<SearchGuidesOutput>(
+      searchGuides,
+      buildRequest("rk2-trav", {location: SEOUL})
+    );
+    expect(rankOf(r, "rk2-hi")).toBeLessThan(rankOf(r, "rk2-lo"));
+  });
+
+  it("만족도·성사율이 같으면 거리 오름차순으로 정렬된다", async () => {
+    await seedGuide("rk3-near", {
+      location: NEAR_CLOSE,
+      totalRequestsReceived: 10,
+      completedEscortCount: 5,
+      averageSatisfaction: 4,
+      ratedEscortCount: 2,
+    });
+    await seedGuide("rk3-far", {
+      location: NEAR_FAR,
+      totalRequestsReceived: 10,
+      completedEscortCount: 5,
+      averageSatisfaction: 4,
+      ratedEscortCount: 2,
+    });
+
+    const r = await runCallable<SearchGuidesOutput>(
+      searchGuides,
+      buildRequest("rk3-trav", {location: SEOUL})
+    );
+    expect(rankOf(r, "rk3-near")).toBeLessThan(rankOf(r, "rk3-far"));
+  });
+
+  it("신규 안내자는 거리순으로만 정렬되고 기존 안내자보다 뒤에 온다", async () => {
+    // 기존 안내자(요청 1건 이상)는 멀어도 신규보다 앞.
+    await seedGuide("rk4-exist", {
+      location: NEAR_FAR,
+      totalRequestsReceived: 5,
+      completedEscortCount: 0,
+    });
+    await seedGuide("rk4-new-near", {
+      location: NEAR_CLOSE,
+      totalRequestsReceived: 0,
+    });
+    await seedGuide("rk4-new-far", {
+      location: NEAR_FAR,
+      totalRequestsReceived: 0,
+    });
+
+    const r = await runCallable<SearchGuidesOutput>(
+      searchGuides,
+      buildRequest("rk4-trav", {location: SEOUL})
+    );
+    // 신규끼리는 거리 오름차순
+    expect(rankOf(r, "rk4-new-near")).toBeLessThan(rankOf(r, "rk4-new-far"));
+    // 기존(먼) 안내자가 더 가까운 신규 안내자보다 앞
+    expect(rankOf(r, "rk4-exist")).toBeLessThan(rankOf(r, "rk4-new-near"));
+  });
+
+  it("요청 1건 이상·완료 0건은 신규가 아니며 성사율 0으로 정렬에 포함된다", async () => {
+    await seedGuide("rk5-better", {
+      totalRequestsReceived: 3,
+      completedEscortCount: 3, // 성사율 1.0
+    });
+    await seedGuide("rk5-zero", {
+      totalRequestsReceived: 3,
+      completedEscortCount: 0, // 성사율 0, 신규 아님
+    });
+    await seedGuide("rk5-new", {totalRequestsReceived: 0});
+
+    const r = await runCallable<SearchGuidesOutput>(
+      searchGuides,
+      buildRequest("rk5-trav", {location: SEOUL})
+    );
+    const zero = r.candidates.find((c) => c.guide.id === "rk5-zero");
+    expect(zero?.isNewGuide).toBe(false); // 신규 아님
+    // 성사율 1.0 > 0 → better가 앞
+    expect(rankOf(r, "rk5-better")).toBeLessThan(rankOf(r, "rk5-zero"));
+    // 완료 0건이지만 신규 안내자보다는 앞(기존 그룹)
+    expect(rankOf(r, "rk5-zero")).toBeLessThan(rankOf(r, "rk5-new"));
+  });
+
+  it("만족도 데이터가 없어도 성사율·거리로 정렬이 깨지지 않는다", async () => {
+    await seedGuide("rk6-hi", {
+      totalRequestsReceived: 4,
+      completedEscortCount: 4, // 성사율 1.0
+      averageSatisfaction: null, // 만족도 없음
+      ratedEscortCount: 0,
+    });
+    await seedGuide("rk6-lo", {
+      totalRequestsReceived: 4,
+      completedEscortCount: 2, // 성사율 0.5
+      averageSatisfaction: null,
+      ratedEscortCount: 0,
+    });
+
+    const r = await runCallable<SearchGuidesOutput>(
+      searchGuides,
+      buildRequest("rk6-trav", {location: SEOUL})
+    );
+    expect(rankOf(r, "rk6-hi")).toBeGreaterThanOrEqual(0);
+    expect(rankOf(r, "rk6-hi")).toBeLessThan(rankOf(r, "rk6-lo"));
   });
 
   // ---- requestEscort ----
