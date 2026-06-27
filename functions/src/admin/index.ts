@@ -2,16 +2,30 @@ import * as admin from "firebase-admin";
 import {Timestamp} from "firebase-admin/firestore";
 import {HttpsError, onCall} from "firebase-functions/v2/https";
 import {assertOperator} from "../shared/guards";
-import {Group, GuideApplication, GuideApplicationStatus} from "../types";
+import {
+  ArchiveItem,
+  Group,
+  GuideApplication,
+  GuideApplicationStatus,
+  UserProfile,
+} from "../types";
 import {
   ApproveGuideInput,
   ApproveGuideOutput,
+  ApprovedGuideView,
+  DeleteArchiveItemAsAdminInput,
+  DeleteArchiveItemAsAdminOutput,
   HideArchiveItemInput,
   HideArchiveItemOutput,
+  ListApprovedGuidesInput,
+  ListApprovedGuidesOutput,
   ListPendingGuideApplicationsInput,
   ListPendingGuideApplicationsOutput,
+  ListReportedArchiveItemsInput,
+  ListReportedArchiveItemsOutput,
   RejectGuideInput,
   RejectGuideOutput,
+  ReportedArchiveItemView,
 } from "./types";
 
 /**
@@ -224,4 +238,112 @@ export const hideArchiveItem = onCall<
   await ref.update({hidden: true, updatedAt: Timestamp.now()});
 
   return {hidden: true};
+});
+
+/**
+ * US#15,#61 / Slice 5: 신고된(reportCount>0) 동네 지식 검토 목록 조회.
+ * reportCount>0 단일 부등식 쿼리만 사용하고(복합 색인 회피), hidden 필터·정렬은
+ * 메모리에서 처리한다. reportCount 내림차순(동률이면 updatedAt 최신)으로 정렬하며,
+ * exactLocation은 응답에서 제외한다.
+ */
+export const listReportedArchiveItems = onCall<
+  ListReportedArchiveItemsInput,
+  Promise<ListReportedArchiveItemsOutput>
+>(async (request) => {
+  assertOperator(request.auth);
+  const includeHidden = request.data?.includeHidden === true;
+
+  const snap = await admin
+    .firestore()
+    .collection("archiveItems")
+    .where("reportCount", ">", 0)
+    .get();
+
+  const items: ReportedArchiveItemView[] = snap.docs
+    .map((doc) => ({id: doc.id, ...(doc.data() as Omit<ArchiveItem, "id">)}))
+    .filter((item) => includeHidden || item.hidden !== true)
+    .sort((a, b) => {
+      if (b.reportCount !== a.reportCount) {
+        return b.reportCount - a.reportCount;
+      }
+      return b.updatedAt.toMillis() - a.updatedAt.toMillis();
+    })
+    .map((item) => ({
+      id: item.id,
+      authorId: item.authorId,
+      category: item.category,
+      voiceTranscript: item.voiceTranscript,
+      aiSummary: item.aiSummary ?? null,
+      dongLabel: item.dongLabel ?? "행정동 확인 필요",
+      reportCount: item.reportCount,
+      hidden: item.hidden === true,
+      published: item.published === true,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
+    }));
+
+  return {items};
+});
+
+/**
+ * US#15,#61 / Slice 5: 운영자가 신고된 동네 지식을 영구 삭제한다.
+ * 안내자 본인 삭제(archive/deleteArchiveItem)와 별개의 운영자 전용 경로다.
+ */
+export const deleteArchiveItemAsAdmin = onCall<
+  DeleteArchiveItemAsAdminInput,
+  Promise<DeleteArchiveItemAsAdminOutput>
+>(async (request) => {
+  assertOperator(request.auth);
+
+  const {itemId} = request.data;
+  if (!itemId) {
+    throw new HttpsError("invalid-argument", "itemId가 필요합니다.");
+  }
+
+  const ref = admin.firestore().collection("archiveItems").doc(itemId);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    throw new HttpsError("not-found", "동네 지식을 찾을 수 없습니다.");
+  }
+
+  await ref.delete();
+
+  return {deleted: true};
+});
+
+/**
+ * US#16,#60 / Slice 5: 운영자가 승인된 안내자(guideApproved==true) 목록을 조회한다.
+ * 자격 상실 처리는 기존 rejectGuide(userId)를 재사용한다. 단일 등식 쿼리로 색인 불필요.
+ */
+export const listApprovedGuides = onCall<
+  ListApprovedGuidesInput,
+  Promise<ListApprovedGuidesOutput>
+>(async (request) => {
+  assertOperator(request.auth);
+
+  const snap = await admin
+    .firestore()
+    .collection("users")
+    .where("guideApproved", "==", true)
+    .get();
+
+  const guides: ApprovedGuideView[] = snap.docs.map((doc) => {
+    const user = doc.data() as Omit<UserProfile, "id">;
+    const view: ApprovedGuideView = {
+      userId: doc.id,
+      phoneNumber: user.phoneNumber,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    };
+    const years = user.residenceYears ?? user.residencyYears;
+    if (typeof years === "number") {
+      view.residenceYears = years;
+    }
+    if (Array.isArray(user.interests) && user.interests.length > 0) {
+      view.interests = user.interests;
+    }
+    return view;
+  });
+
+  return {guides};
 });

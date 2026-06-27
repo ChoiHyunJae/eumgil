@@ -1,16 +1,22 @@
 import * as admin from "firebase-admin";
-import {Timestamp} from "firebase-admin/firestore";
+import {GeoPoint, Timestamp} from "firebase-admin/firestore";
 import type {CallableRequest} from "firebase-functions/v2/https";
 import {
   approveGuide,
+  deleteArchiveItemAsAdmin,
   hideArchiveItem,
+  listApprovedGuides,
   listPendingGuideApplications,
+  listReportedArchiveItems,
   rejectGuide,
 } from "../src/admin";
 import type {
   ApproveGuideOutput,
+  DeleteArchiveItemAsAdminOutput,
   HideArchiveItemOutput,
+  ListApprovedGuidesOutput,
   ListPendingGuideApplicationsOutput,
+  ListReportedArchiveItemsOutput,
   RejectGuideOutput,
 } from "../src/admin/types";
 
@@ -532,5 +538,166 @@ describe("admin module", () => {
       buildRequest(OPERATOR, {userId: guideId})
     );
     expect(result.guideApproved).toBe(false);
+  });
+
+  // ---- Slice 5: listReportedArchiveItems ----
+
+  /**
+   * 신고된 archiveItems 문서를 만든다.
+   * @param {string} id 문서 id.
+   * @param {object} opts reportCount/hidden/category 등 옵션.
+   * @return {Promise<void>} 쓰기 완료 Promise.
+   */
+  async function seedReportedItem(
+    id: string,
+    opts: {
+      reportCount: number;
+      hidden?: boolean;
+      category?: string;
+      dongLabel?: string;
+    }
+  ): Promise<void> {
+    await db.collection("archiveItems").doc(id).set({
+      authorId: "rep-author",
+      category: opts.category ?? "PLACE",
+      voiceTranscript: "신고 대상 본문",
+      aiSummary: null,
+      confirmedByAuthor: true,
+      photoUrls: [],
+      exactLocation: new GeoPoint(37.5665, 126.978),
+      dongLabel: opts.dongLabel ?? "종로구 사직동 인근",
+      visibilityRadiusM: 3000,
+      published: true,
+      reportCount: opts.reportCount,
+      hidden: opts.hidden ?? false,
+      createdAt: Timestamp.now(),
+      updatedAt: Timestamp.now(),
+    });
+  }
+
+  it("listReportedArchiveItems는 reportCount>0인 미숨김 항목만 반환한다", async () => {
+    await seedReportedItem("rep-a", {reportCount: 2});
+    await seedReportedItem("rep-zero", {reportCount: 0});
+    await seedReportedItem("rep-hidden", {reportCount: 5, hidden: true});
+
+    const result = await runCallable<ListReportedArchiveItemsOutput>(
+      listReportedArchiveItems,
+      buildRequest(OPERATOR, {})
+    );
+    const ids = result.items.map((i) => i.id);
+    expect(ids).toContain("rep-a");
+    expect(ids).not.toContain("rep-zero"); // reportCount==0 제외
+    expect(ids).not.toContain("rep-hidden"); // 기본은 숨김 제외
+  });
+
+  it("includeHidden=true이면 숨김 항목도 포함한다", async () => {
+    await seedReportedItem("rep-h2", {reportCount: 4, hidden: true});
+
+    const result = await runCallable<ListReportedArchiveItemsOutput>(
+      listReportedArchiveItems,
+      buildRequest(OPERATOR, {includeHidden: true})
+    );
+    expect(result.items.map((i) => i.id)).toContain("rep-h2");
+  });
+
+  it("reportCount 내림차순으로 정렬되고 exactLocation은 없다", async () => {
+    await seedReportedItem("rep-low", {reportCount: 1});
+    await seedReportedItem("rep-high", {reportCount: 9});
+
+    const result = await runCallable<ListReportedArchiveItemsOutput>(
+      listReportedArchiveItems,
+      buildRequest(OPERATOR, {})
+    );
+    const ids = result.items.map((i) => i.id);
+    expect(ids.indexOf("rep-high")).toBeLessThan(ids.indexOf("rep-low"));
+    for (const item of result.items) {
+      expect(item).not.toHaveProperty("exactLocation");
+    }
+  });
+
+  it("비운영자/미인증은 신고 목록을 조회할 수 없다", async () => {
+    await expect(
+      runCallable<ListReportedArchiveItemsOutput>(
+        listReportedArchiveItems,
+        buildRequest(NON_OPERATOR, {})
+      )
+    ).rejects.toThrow();
+    await expect(
+      runCallable<ListReportedArchiveItemsOutput>(
+        listReportedArchiveItems,
+        buildRequest(undefined, {})
+      )
+    ).rejects.toThrow();
+  });
+
+  // ---- Slice 5: deleteArchiveItemAsAdmin ----
+
+  it("운영자가 삭제하면 문서가 실제로 사라진다", async () => {
+    await seedReportedItem("del-target", {reportCount: 3});
+    const result = await runCallable<DeleteArchiveItemAsAdminOutput>(
+      deleteArchiveItemAsAdmin,
+      buildRequest(OPERATOR, {itemId: "del-target"})
+    );
+    expect(result.deleted).toBe(true);
+    const doc = await db.collection("archiveItems").doc("del-target").get();
+    expect(doc.exists).toBe(false);
+  });
+
+  it("없는 itemId 삭제는 not-found", async () => {
+    await expect(
+      runCallable<DeleteArchiveItemAsAdminOutput>(
+        deleteArchiveItemAsAdmin,
+        buildRequest(OPERATOR, {itemId: "no-such"})
+      )
+    ).rejects.toMatchObject({code: "not-found"});
+  });
+
+  it("비운영자/미인증은 운영자 삭제를 할 수 없다", async () => {
+    await seedReportedItem("del-forbidden", {reportCount: 3});
+    await expect(
+      runCallable<DeleteArchiveItemAsAdminOutput>(
+        deleteArchiveItemAsAdmin,
+        buildRequest(NON_OPERATOR, {itemId: "del-forbidden"})
+      )
+    ).rejects.toThrow();
+    await expect(
+      runCallable<DeleteArchiveItemAsAdminOutput>(
+        deleteArchiveItemAsAdmin,
+        buildRequest(undefined, {itemId: "del-forbidden"})
+      )
+    ).rejects.toThrow();
+    // 거부되었으므로 문서는 남아 있어야 한다.
+    const doc = await db.collection("archiveItems").doc("del-forbidden").get();
+    expect(doc.exists).toBe(true);
+  });
+
+  // ---- Slice 5: listApprovedGuides ----
+
+  it("listApprovedGuides는 guideApproved=true 사용자만 반환한다", async () => {
+    await seedApprovedGuide("ag-approved");
+    await seedUnapprovedGuide("ag-unapproved", null);
+
+    const result = await runCallable<ListApprovedGuidesOutput>(
+      listApprovedGuides,
+      buildRequest(OPERATOR, {})
+    );
+    const ids = result.guides.map((g) => g.userId);
+    expect(ids).toContain("ag-approved");
+    expect(ids).not.toContain("ag-unapproved");
+  });
+
+  it("비운영자/미인증은 승인 안내자 목록을 조회할 수 없다", async () => {
+    await expect(
+      runCallable<ListApprovedGuidesOutput>(
+        listApprovedGuides,
+        buildRequest(NON_OPERATOR, {})
+      )
+    ).rejects.toThrow();
+    await expect(
+      runCallable<ListApprovedGuidesOutput>(
+        listApprovedGuides,
+        buildRequest(undefined, {})
+      )
+    ).rejects.toThrow();
   });
 });

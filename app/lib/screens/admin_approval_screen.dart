@@ -1,13 +1,14 @@
 import 'package:flutter/material.dart';
 
 import '../services/admin_service.dart';
+import 'approved_guides_screen.dart';
 import 'archive_hide_screen.dart';
 
 /// 운영자가 pending 안내자 신청을 조회·승인·거절하는 최소 관리자 화면.
 ///
 /// initState에서 listPendingGuideApplications를 호출해 목록을 불러오고,
 /// 각 신청을 approveGuide/rejectGuide로 처리한 뒤 목록을 새로고침한다.
-/// 운영자 권한이 없으면 백엔드가 permission-denied를 반환하며, 에러 상태로 표시된다.
+/// 운영자 권한이 없으면 백엔드가 permission-denied를 반환하며, 에러 상태로 표시한다.
 class AdminApprovalScreen extends StatefulWidget {
   const AdminApprovalScreen({super.key, this.service});
 
@@ -25,7 +26,7 @@ class _AdminApprovalScreenState extends State<AdminApprovalScreen> {
   Object? _error;
   List<PendingApplication> _items = const [];
 
-  /// 처리 중인 신청자 userId 집합(중복 클릭 방지 및 버튼 비활성화용).
+  /// 처리 중인 신청의 userId 집합(중복 클릭 방지 및 버튼 비활성화용).
   final Set<String> _processing = <String>{};
 
   @override
@@ -95,11 +96,20 @@ class _AdminApprovalScreenState extends State<AdminApprovalScreen> {
           IconButton(
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute<void>(
+                builder: (_) => const ApprovedGuidesScreen(),
+              ),
+            ),
+            icon: const Icon(Icons.people_alt),
+            tooltip: '승인된 안내자 관리',
+          ),
+          IconButton(
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
                 builder: (_) => const ArchiveHideScreen(),
               ),
             ),
             icon: const Icon(Icons.visibility_off),
-            tooltip: '동네 지식 숨김 처리',
+            tooltip: '신고 동네 지식 검토',
           ),
           IconButton(
             onPressed: _loading ? null : _load,
