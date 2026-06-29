@@ -126,3 +126,26 @@ export async function notifyEscortLifecycle(
     await sendWithFallback(target, message);
   }
 }
+
+/**
+ * 소모임 자동 해산을 멤버 본인 전화번호로 알린다(알림톡 → 실패 시 SMS).
+ * 비상연락처가 아닌 멤버 본인에게 발송한다.
+ * @param {string[]} memberIds 알림 수신 대상 uid 목록(안내자 본인 제외).
+ * @return {Promise<void>} 발송 완료 Promise.
+ */
+export async function notifyGroupDissolved(memberIds: string[]): Promise<void> {
+  if (memberIds.length === 0) return;
+  const db = admin.firestore();
+  const snaps = await Promise.all(
+    memberIds.map((id) => db.collection("users").doc(id).get())
+  );
+  for (const snap of snaps) {
+    if (!snap.exists) continue;
+    const {phoneNumber} = snap.data() as Omit<UserProfile, "id">;
+    if (!phoneNumber) continue;
+    await sendWithFallback(
+      {phoneNumber, name: "소모임원"},
+      "소모임이 안내자 자격 상실로 해산되었습니다."
+    );
+  }
+}

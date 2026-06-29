@@ -49,6 +49,7 @@ export const suggestGroup = onCall<
     throw new HttpsError("invalid-argument", "escortPairId가 필요합니다.");
   }
 
+  const callerUid = request.auth.uid;
   const db = admin.firestore();
   const pairRef = db.collection("escortPairs").doc(escortPairId);
 
@@ -59,6 +60,10 @@ export const suggestGroup = onCall<
     }
 
     const pair = {id: snap.id, ...snap.data()} as EscortPair;
+
+    if (callerUid !== pair.guideId && callerUid !== pair.travelerId) {
+      throw new HttpsError("permission-denied", "동행 쌍 참여자만 제안할 수 있습니다.");
+    }
 
     // CONTEXT.md Invariant: Completed만 카운트. 제안은 1회만.
     if (
@@ -145,10 +150,9 @@ export const respondToSuggestion = onCall<
 
     // 동의: 내 동의 기록 후 상대방 동의 여부 확인
     const myConsentField = isGuide ? "guideConsentedAt" : "travelerConsentedAt";
-    const pairData = snap.data() as EscortPair;
     const otherConsentedAt = isGuide ?
-      pairData.travelerConsentedAt :
-      pairData.guideConsentedAt;
+      pair.travelerConsentedAt :
+      pair.guideConsentedAt;
 
     if (!otherConsentedAt) {
       // 상대방 아직 미응답 — 내 동의만 기록
