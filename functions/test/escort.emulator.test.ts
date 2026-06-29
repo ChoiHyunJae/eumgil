@@ -708,6 +708,27 @@ describe("escort module", () => {
     expect(g?.matchBlockedUntil).not.toBeNull();
   });
 
+  it("전날 이전 취소는 noShowCount가 증가하지 않는다(패널티 없음)", async () => {
+    // AC3: 약속 전날 또는 그 이전에 취소하면 페널티가 없어야 한다.
+    await seedUser("cp-nopenalty-t", 0);
+    const yesterday = Timestamp.fromMillis(Date.now() - 25 * 60 * 60 * 1000);
+    const escortId = await seedEscort({
+      guideId: "cp-nopenalty-g",
+      travelerId: "cp-nopenalty-t",
+      status: "MeetingConfirmed",
+      meetingTime: yesterday, // 만남 시간이 어제 → 오늘 취소 = 전날 이전 취소
+    });
+    // meetingTime이 어제이고 오늘 취소하면 isSameUtcDay가 false → 패널티 없음.
+    // (단, 어제와 오늘이 UTC 기준 같은 날일 수 없는 25시간 차이로 설정)
+    const result = await runCallable<CancelEscortOutput>(
+      cancelEscort,
+      buildRequest("cp-nopenalty-t", {escortId})
+    );
+    expect(result.isSameDayCancellation).toBe(false);
+    const t = (await db.collection("users").doc("cp-nopenalty-t").get()).data();
+    expect(t?.noShowCount).toBe(0); // 패널티 없음
+  });
+
   // ---- midTerminate ----
 
   it("미인증 사용자는 중도 종료할 수 없다", async () => {
