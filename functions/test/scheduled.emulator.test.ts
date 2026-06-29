@@ -329,3 +329,124 @@ describe("scheduled escort lifecycle", () => {
     expect(guide?.guideStats.averageSatisfaction).toBeNull(); // 중복 반영 안 됨
   });
 });
+
+// ---- AC4/AC2 추가 테스트 ----
+
+describe("autoCompleteEscort — AC4/AC2", () => {
+  let app: admin.app.App;
+  let db: admin.firestore.Firestore;
+
+  beforeAll(() => {
+    if (!process.env.FIRESTORE_EMULATOR_HOST) {
+      throw new Error("FIRESTORE_EMULATOR_HOST가 설정되어 있지 않습니다.");
+    }
+    app = admin.initializeApp({projectId: "eumgil-test-harness-ac"});
+    db = admin.firestore(app);
+  });
+
+  afterAll(async () => {
+    db.terminate();
+    await app.delete();
+  });
+
+  /**
+   * @param {unknown} fn 스케줄 함수.
+   * @return {Promise<void>} 완료.
+   */
+  function runScheduled(fn: unknown): Promise<void> {
+    return (fn as {run: (e?: unknown) => Promise<void>}).run({});
+  }
+
+  /**
+   * @param {number} h 시간.
+   * @return {Timestamp} 과거 Timestamp.
+   */
+  const hoursAgo = (h: number): Timestamp =>
+    Timestamp.fromMillis(Date.now() - h * 3600_000);
+
+  /**
+   * @param {object} f escort 필드.
+   * @return {Promise<string>} 문서 id.
+   */
+  async function seedEscort(f: {
+    guideId: string;
+    travelerId: string;
+    status: string;
+    guideArrivalConfirmedAt?: Timestamp | null;
+    travelerArrivalConfirmedAt?: Timestamp | null;
+    guideCompletedAt?: Timestamp | null;
+    travelerCompletedAt?: Timestamp | null;
+  }): Promise<string> {
+    const now = Timestamp.now();
+    const ref = db.collection("escorts").doc();
+    await ref.set({
+      guideId: f.guideId,
+      travelerId: f.travelerId,
+      status: f.status,
+      requestedAt: now,
+      respondedAt: now,
+      requestExpiresAt: Timestamp.fromMillis(now.toMillis() + 3600_000),
+      meetingLocation: null,
+      meetingTime: now,
+      cancelledBy: null,
+      cancelledAt: null,
+      isSameDayCancellation: null,
+      noShowBy: [],
+      guideArrivalConfirmedAt: f.guideArrivalConfirmedAt ?? null,
+      travelerArrivalConfirmedAt: f.travelerArrivalConfirmedAt ?? null,
+      midTerminatedBy: null,
+      midTerminatedAt: null,
+      guideCompletedAt: f.guideCompletedAt ?? null,
+      travelerCompletedAt: f.travelerCompletedAt ?? null,
+      satisfactionRating: null,
+      satisfactionStatsAppliedAt: null,
+      createdAt: now,
+      updatedAt: f.guideArrivalConfirmedAt ?? now,
+    });
+    return ref.id;
+  }
+
+  it(
+    "AC4: MidTerminated 동행은 autoCompleteEscort가 Completed로 덮어쓰지 않는다",
+    async () => {
+      const id = await seedEscort({
+        guideId: "ac2-mid-g",
+        travelerId: "ac2-mid-t",
+        status: "MidTerminated",
+        guideArrivalConfirmedAt: hoursAgo(25),
+        travelerArrivalConfirmedAt: hoursAgo(25),
+      });
+      await runScheduled(autoCompleteEscort);
+      const escort = (await db.collection("escorts").doc(id).get()).data();
+      expect(escort?.status).toBe("MidTerminated");
+    });
+
+  it("AC2: 한쪽 completeEscort 호출 후 24시간 경과 → 자동 완료", async () => {
+    const id = await seedEscort({
+      guideId: "ac2-half-g",
+      travelerId: "ac2-half-t",
+      status: "InProgress",
+      guideArrivalConfirmedAt: hoursAgo(30),
+      travelerArrivalConfirmedAt: hoursAgo(30),
+      guideCompletedAt: hoursAgo(25),
+    });
+    await runScheduled(autoCompleteEscort);
+    const escort = (await db.collection("escorts").doc(id).get()).data();
+    expect(escort?.status).toBe("Completed");
+    expect(escort?.autoCompletedAt).not.toBeNull();
+  });
+
+  it("AC2: 한쪽 completeEscort 후 24시간 미경과면 자동 완료 안 됨", async () => {
+    const id = await seedEscort({
+      guideId: "ac2-early-g",
+      travelerId: "ac2-early-t",
+      status: "InProgress",
+      guideArrivalConfirmedAt: hoursAgo(30),
+      travelerArrivalConfirmedAt: hoursAgo(30),
+      guideCompletedAt: hoursAgo(10),
+    });
+    await runScheduled(autoCompleteEscort);
+    const escort = (await db.collection("escorts").doc(id).get()).data();
+    expect(escort?.status).toBe("InProgress");
+  });
+});

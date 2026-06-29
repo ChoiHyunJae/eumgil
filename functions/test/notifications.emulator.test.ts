@@ -326,3 +326,147 @@ describe("escort lifecycle notifications", () => {
     expect(phones(fake.alimtalk)).toEqual(["+8210BBBB0007"]);
   });
 });
+
+// AC7: 알림 요청의 name과 message 파라미터 검증
+describe("notification request parameters (AC7)", () => {
+  let app: admin.app.App;
+  let db: admin.firestore.Firestore;
+  let fake: FakeGateway;
+
+  beforeAll(() => {
+    if (!process.env.FIRESTORE_EMULATOR_HOST) {
+      throw new Error("FIRESTORE_EMULATOR_HOST가 설정되어 있지 않습니다.");
+    }
+    app = admin.initializeApp({projectId: "eumgil-test-harness-param"});
+    db = admin.firestore(app);
+  });
+
+  afterAll(async () => {
+    setNotificationGateway(null);
+    db.terminate();
+    await app.delete();
+  });
+
+  beforeEach(() => {
+    fake = new FakeGateway();
+    setNotificationGateway(fake);
+  });
+
+  /**
+   * @param {string | undefined} uid 호출자 uid.
+   * @param {unknown} data 입력.
+   * @return {CallableRequest<unknown>} 요청.
+   */
+  function buildRequest(
+    uid: string | undefined,
+    data: unknown
+  ): CallableRequest<unknown> {
+    return {
+      data,
+      auth: uid === undefined ?
+        undefined :
+        {uid, token: {} as unknown, rawToken: "dummy"} as
+          CallableRequest["auth"],
+      rawRequest: {} as CallableRequest["rawRequest"],
+      acceptsStreaming: false,
+    } as CallableRequest<unknown>;
+  }
+
+  /**
+   * @param {unknown} fn callable.
+   * @param {CallableRequest<unknown>} req 요청.
+   * @return {Promise<O>} 결과.
+   */
+  function runCallable<O>(
+    fn: unknown,
+    req: CallableRequest<unknown>
+  ): Promise<O> {
+    return (fn as {run: (r: CallableRequest<unknown>) => Promise<O>}).run(req);
+  }
+
+  /**
+   * @param {string} uid uid.
+   * @param {string} contactPhone 비상연락처 전화번호.
+   * @return {Promise<void>} 완료.
+   */
+  async function seedUserWithContact(
+    uid: string,
+    contactPhone: string
+  ): Promise<void> {
+    await db.collection("users").doc(uid).set({
+      phoneNumber: "+821000000000",
+      emergencyContact: {name: `${uid}-보호자`, phoneNumber: contactPhone},
+      guideApproved: false,
+      matchBlockedUntil: null,
+      noShowCount: 0,
+      guideStats: {
+        averageSatisfaction: null,
+        totalRequestsReceived: 0,
+        completedEscortCount: 0,
+      },
+      createdAt: Timestamp.now(),
+      updatedAt: Timestamp.now(),
+    });
+  }
+
+  /**
+   * @param {object} fields escort 필드.
+   * @return {Promise<string>} 문서 id.
+   */
+  async function seedEscort(fields: {
+    guideId: string;
+    travelerId: string;
+    status: string;
+    guideCompletedAt?: Timestamp | null;
+  }): Promise<string> {
+    const now = Timestamp.now();
+    const ref = db.collection("escorts").doc();
+    await ref.set({
+      guideId: fields.guideId,
+      travelerId: fields.travelerId,
+      status: fields.status,
+      requestedAt: now,
+      respondedAt: now,
+      requestExpiresAt: Timestamp.fromMillis(now.toMillis() + 3600_000),
+      meetingLocation: null,
+      meetingTime: now,
+      cancelledBy: null,
+      cancelledAt: null,
+      isSameDayCancellation: null,
+      noShowBy: [],
+      guideArrivalConfirmedAt: null,
+      travelerArrivalConfirmedAt: null,
+      midTerminatedBy: null,
+      midTerminatedAt: null,
+      guideCompletedAt: fields.guideCompletedAt ?? null,
+      travelerCompletedAt: null,
+      satisfactionRating: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    return ref.id;
+  }
+
+  it("AC7: 알림 요청의 name과 message 파라미터가 올바르게 전달된다", async () => {
+    await seedUserWithContact("nt-param-g", "+8210AAAA0008");
+    await seedUserWithContact("nt-param-t", "+8210BBBB0008");
+    const id = await seedEscort({
+      guideId: "nt-param-g",
+      travelerId: "nt-param-t",
+      status: "InProgress",
+      guideCompletedAt: Timestamp.now(),
+    });
+
+    await runCallable(
+      completeEscort,
+      buildRequest("nt-param-t", {escortId: id})
+    );
+
+    expect(fake.alimtalk).toHaveLength(2);
+    const names = fake.alimtalk.map((r) => r.name).sort();
+    expect(names).toEqual(["nt-param-g-보호자", "nt-param-t-보호자"]);
+    expect(
+      fake.alimtalk.every((r) => r.message === "동행이 종료되었습니다.")
+    ).toBe(true);
+  });
+});
