@@ -250,6 +250,17 @@ export const requestEscort = onCall<
     );
   }
 
+  // AC8 / CONTEXT 불변규칙: 매칭 제한 기간 중인 탐방자 본인은 새 동행 요청을
+  // 생성할 수 없다. 대상 안내자의 차단과 별개로 호출자 본인의 차단도 검사한다.
+  const travelerSnap = await db.collection("users").doc(travelerId).get();
+  const traveler = travelerSnap.data() as Omit<UserProfile, "id"> | undefined;
+  if (traveler && isMatchBlocked(traveler.matchBlockedUntil, now)) {
+    throw new HttpsError(
+      "failed-precondition",
+      "매칭이 제한된 상태에서는 동행을 요청할 수 없습니다."
+    );
+  }
+
   // 같은 (traveler, guide) 쌍의 진행 중 요청 여부를 메모리에서 판정한다
   // (등식 2개만 사용해 복합 색인 불필요).
   const existing = await db
@@ -348,6 +359,17 @@ export const respondToRequest = onCall<
   if (!accept) {
     await ref.update({status: "Rejected", respondedAt: now, updatedAt: now});
     return {status: "Rejected"};
+  }
+
+  // AC8 / CONTEXT 불변규칙: 매칭 제한 기간 중인 안내자 본인은 요청을 수락할 수
+  // 없다. 거절(위 분기)은 허용하되, 수락 경로에서만 호출자의 차단을 검사한다.
+  const guideSnap = await db.collection("users").doc(escort.guideId).get();
+  const guideProfile = guideSnap.data() as Omit<UserProfile, "id"> | undefined;
+  if (guideProfile && isMatchBlocked(guideProfile.matchBlockedUntil, now)) {
+    throw new HttpsError(
+      "failed-precondition",
+      "매칭이 제한된 상태에서는 요청을 수락할 수 없습니다."
+    );
   }
 
   // 수락 시 만남 장소·시간 필수(Accepted를 거치지 않고 MeetingConfirmed로 확정).

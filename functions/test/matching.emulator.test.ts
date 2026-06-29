@@ -564,6 +564,42 @@ describe("matching module", () => {
     expect(data?.status).toBe("Rejected");
   });
 
+  it("매칭제한 중인 안내자 본인은 요청을 수락할 수 없다", async () => {
+    await seedGuide("rr-blocked-guide", {matchBlockedUntil: future()});
+    const escortId = await seedEscort({
+      guideId: "rr-blocked-guide",
+      travelerId: "rr-t-blk",
+      status: "Requested",
+      requestExpiresAt: future(),
+    });
+    await expect(
+      runCallable<RespondToRequestOutput>(
+        respondToRequest,
+        buildRequest("rr-blocked-guide", {
+          escortId,
+          accept: true,
+          meetingLocation: {lat: 37.5665, lng: 126.978},
+          meetingTime: "2026-07-01T10:00:00.000Z",
+        })
+      )
+    ).rejects.toMatchObject({code: "failed-precondition"});
+  });
+
+  it("매칭제한 중인 안내자도 요청을 거절할 수는 있다", async () => {
+    await seedGuide("rr-blocked-guide2", {matchBlockedUntil: future()});
+    const escortId = await seedEscort({
+      guideId: "rr-blocked-guide2",
+      travelerId: "rr-t-blk2",
+      status: "Requested",
+      requestExpiresAt: future(),
+    });
+    const result = await runCallable<RespondToRequestOutput>(
+      respondToRequest,
+      buildRequest("rr-blocked-guide2", {escortId, accept: false})
+    );
+    expect(result.status).toBe("Rejected");
+  });
+
   it("수락인데 만남 정보가 없으면 거부된다", async () => {
     const escortId = await seedEscort({
       guideId: "rr-guide-nomeet",
