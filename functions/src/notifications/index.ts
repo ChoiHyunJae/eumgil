@@ -51,12 +51,13 @@ export function setNotificationGateway(g: NotificationGateway | null): void {
 }
 
 /** 동행 생명주기 알림 이벤트. */
-export type EscortNotificationEvent = "started" | "ended";
+export type EscortNotificationEvent = "started" | "ended" | "cancelled";
 
 /** 이벤트별 메시지 본문. */
 const MESSAGES: Record<EscortNotificationEvent, string> = {
   started: "동행이 시작되었습니다.",
   ended: "동행이 종료되었습니다.",
+  cancelled: "동행이 취소되었습니다.",
 };
 
 /**
