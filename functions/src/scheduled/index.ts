@@ -23,15 +23,25 @@ import {nextSatisfactionStats} from "../escort/satisfaction";
 const AUTO_COMPLETE_MS = 24 * 60 * 60 * 1000;
 
 /**
- * InProgress 동행의 시작 기준 시각(밀리초)을 추정한다.
- * 별도 startedAt 필드가 없으므로, 양쪽 "만났어요" 확인 시각 중 더 늦은 시각을
- * InProgress 진입 시점으로 본다(confirmMeeting이 양쪽 확인 시 InProgress 전환).
- * 둘 다 비어 있는 비정상 케이스는 updatedAt으로 폴백한다.
+ * InProgress 동행의 자동 완료 기준 시각(밀리초)을 추정한다.
+ * AC2: 한쪽이 "동행 종료"를 누른 시점이 있으면 그 시각부터 24시간을 센다.
+ * 아직 아무도 누르지 않은 경우에는 양쪽 "만났어요" 확인 중 늦은 시각(InProgress
+ * 진입 시점)을 기준으로 한다. 폴백은 updatedAt.
  *
  * @param {Omit<Escort, "id">} escort 대상 escort 문서 데이터.
- * @return {number} InProgress 시작 추정 시각(밀리초).
+ * @return {number} 자동 완료 타이머 시작 추정 시각(밀리초).
  */
 function inProgressStartMs(escort: Omit<Escort, "id">): number {
+  // 한쪽이 먼저 종료를 누른 경우: 그 시각부터 24시간 타이머 시작.
+  const guideCompleted = escort.guideCompletedAt?.toMillis();
+  const travelerCompleted = escort.travelerCompletedAt?.toMillis();
+  if (guideCompleted != null || travelerCompleted != null) {
+    const times = [guideCompleted, travelerCompleted].filter(
+      (t): t is number => t != null
+    );
+    return Math.min(...times); // 먼저 누른 쪽의 시각
+  }
+  // 아직 아무도 종료를 누르지 않은 경우: InProgress 진입(도착 확인) 기준.
   const guide = escort.guideArrivalConfirmedAt?.toMillis();
   const traveler = escort.travelerArrivalConfirmedAt?.toMillis();
   if (guide != null && traveler != null) return Math.max(guide, traveler);
@@ -224,33 +234,35 @@ export const autoCompleteEscort = onSchedule("every 15 minutes", async () => {
  * 트리거 조건: groupSuggestionStatus == "proposed" AND suggestionExpiresAt <= now().
  * 각 문서를 트랜잭션으로 처리해 respondToSuggestion과의 경합에서도 일관성을 유지한다.
  */
-export const expireGroupSuggestions = onSchedule("every 60 minutes", async () => {
-  const db = admin.firestore();
-  const now = Timestamp.now();
+export const expireGroupSuggestions = onSchedule(
+  "every 60 minutes",
+  async () => {
+    const db = admin.firestore();
+    const now = Timestamp.now();
 
-  const snap = await db
-    .collection("escortPairs")
-    .where("groupSuggestionStatus", "==", "proposed")
-    .where("suggestionExpiresAt", "<=", now)
-    .get();
+    const snap = await db
+      .collection("escortPairs")
+      .where("groupSuggestionStatus", "==", "proposed")
+      .where("suggestionExpiresAt", "<=", now)
+      .get();
 
-  if (snap.empty) return;
+    if (snap.empty) return;
 
-  for (const doc of snap.docs) {
-    await db.runTransaction(async (tx) => {
-      const fresh = await tx.get(doc.ref);
-      if (!fresh.exists) return;
-      const data = fresh.data() as {
+    for (const doc of snap.docs) {
+      await db.runTransaction(async (tx) => {
+        const fresh = await tx.get(doc.ref);
+        if (!fresh.exists) return;
+        const data = fresh.data() as {
         groupSuggestionStatus: string;
         suggestionExpiresAt: Timestamp | null;
       };
-      // 트랜잭션 재확인: respondToSuggestion이 먼저 처리했으면 건너뛴다.
-      if (data.groupSuggestionStatus !== "proposed") return;
-      if (
-        !data.suggestionExpiresAt ||
+        // 트랜잭션 재확인: respondToSuggestion이 먼저 처리했으면 건너뛴다.
+        if (data.groupSuggestionStatus !== "proposed") return;
+        if (
+          !data.suggestionExpiresAt ||
         data.suggestionExpiresAt.toMillis() > now.toMillis()
-      ) return;
-      tx.update(doc.ref, {groupSuggestionStatus: "expired", updatedAt: now});
-    });
-  }
-});
+        ) return;
+        tx.update(doc.ref, {groupSuggestionStatus: "expired", updatedAt: now});
+      });
+    }
+  });
