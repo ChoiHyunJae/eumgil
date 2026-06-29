@@ -222,6 +222,7 @@ export const autoCompleteEscort = onSchedule("every 15 minutes", async () => {
  * US#43 / Slice 11: escortPairs.groupSuggestionStatus === "proposed" 이고
  * suggestionExpiresAt <= now() 인 문서를 "expired"로 전환한다.
  * 트리거 조건: groupSuggestionStatus == "proposed" AND suggestionExpiresAt <= now().
+ * 각 문서를 트랜잭션으로 처리해 respondToSuggestion과의 경합에서도 일관성을 유지한다.
  */
 export const expireGroupSuggestions = onSchedule("every 60 minutes", async () => {
   const db = admin.firestore();
@@ -235,12 +236,21 @@ export const expireGroupSuggestions = onSchedule("every 60 minutes", async () =>
 
   if (snap.empty) return;
 
-  const batch = db.batch();
   for (const doc of snap.docs) {
-    batch.update(doc.ref, {
-      groupSuggestionStatus: "expired",
-      updatedAt: now,
+    await db.runTransaction(async (tx) => {
+      const fresh = await tx.get(doc.ref);
+      if (!fresh.exists) return;
+      const data = fresh.data() as {
+        groupSuggestionStatus: string;
+        suggestionExpiresAt: Timestamp | null;
+      };
+      // 트랜잭션 재확인: respondToSuggestion이 먼저 처리했으면 건너뛴다.
+      if (data.groupSuggestionStatus !== "proposed") return;
+      if (
+        !data.suggestionExpiresAt ||
+        data.suggestionExpiresAt.toMillis() > now.toMillis()
+      ) return;
+      tx.update(doc.ref, {groupSuggestionStatus: "expired", updatedAt: now});
     });
   }
-  await batch.commit();
 });

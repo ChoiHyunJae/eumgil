@@ -2,6 +2,7 @@ import * as admin from "firebase-admin";
 import {Timestamp} from "firebase-admin/firestore";
 import {HttpsError, onCall} from "firebase-functions/v2/https";
 import {assertOperator} from "../shared/guards";
+import {notifyGroupDissolved} from "../notifications";
 import {
   ArchiveItem,
   Group,
@@ -109,22 +110,19 @@ async function dissolveGuideGroups(
 }
 
 /**
- * 소모임 자동 해산 알림 발송.
- * TODO: 카카오 알림톡 / FCM 연동 — 외부 알림 API 미구현으로 현재 stub.
+ * 소모임 자동 해산 알림 발송. notifications 모듈의 NotificationGateway를 통해 발송하며,
+ * 실패가 rejectGuide 흐름을 깨지 않도록 best-effort로 처리한다.
  *
  * @param {string[]} memberIds 알림 수신 대상 uid 목록.
- * @param {string} guideId 자격을 잃은 안내자 uid.
  * @return {Promise<void>}
  */
-async function notifyGroupDissolution(
-  memberIds: string[],
-  guideId: string
-): Promise<void> {
+async function notifyGroupDissolution(memberIds: string[]): Promise<void> {
   if (memberIds.length === 0) return;
-  // stub: 실제 알림 API 연동 시 여기에 구현
-  console.info(
-    `[stub] 소모임 해산 알림 대상 ${memberIds.length}명 (안내자: ${guideId})`
-  );
+  try {
+    await notifyGroupDissolved(memberIds);
+  } catch (e) {
+    console.error("[notify] 소모임 해산 알림 실패:", e);
+  }
 }
 
 /**
@@ -189,7 +187,7 @@ export const rejectGuide = onCall<
 
   // Slice 13 (Issue #15): 안내자 자격 상실 시 소모임 자동 해산 cascade.
   const notifyTargets = await dissolveGuideGroups(userId, now);
-  await notifyGroupDissolution(notifyTargets, userId);
+  await notifyGroupDissolution(notifyTargets);
 
   return {guideApproved: false};
 });
