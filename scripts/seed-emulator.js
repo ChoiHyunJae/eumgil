@@ -84,6 +84,77 @@ const ACCOUNTS = [
       guideLocation: {lat: 37.5665, lng: 126.978},
     },
   },
+  // 반경 1km 테스트용 추가 안내자 (서울 시청 기준)
+  {
+    uid: "seed-guide2",
+    email: "guide2@eumgil.test",
+    password: "password",
+    claims: null,
+    user: {
+      guideApproved: true,
+      guideLocation: {lat: 37.5683, lng: 126.9795}, // 약 220m
+      residenceYears: 5,
+      interests: ["산책", "카페"],
+      guideStats: {
+        averageSatisfaction: 4.8,
+        totalRequestsReceived: 12,
+        completedEscortCount: 10,
+        ratedEscortCount: 9,
+      },
+    },
+  },
+  {
+    uid: "seed-guide3",
+    email: "guide3@eumgil.test",
+    password: "password",
+    claims: null,
+    user: {
+      guideApproved: true,
+      guideLocation: {lat: 37.5700, lng: 126.9760}, // 약 410m
+      residenceYears: 12,
+      interests: ["역사", "전통시장"],
+      guideStats: {
+        averageSatisfaction: 4.5,
+        totalRequestsReceived: 28,
+        completedEscortCount: 25,
+        ratedEscortCount: 22,
+      },
+    },
+  },
+  {
+    uid: "seed-guide4",
+    email: "guide4@eumgil.test",
+    password: "password",
+    claims: null,
+    user: {
+      guideApproved: true,
+      guideLocation: {lat: 37.5720, lng: 126.9820}, // 약 620m
+      guideStats: {
+        averageSatisfaction: null,
+        totalRequestsReceived: 1,
+        completedEscortCount: 0,
+        ratedEscortCount: 0,
+      },
+    },
+  },
+  {
+    uid: "seed-guide5",
+    email: "guide5@eumgil.test",
+    password: "password",
+    claims: null,
+    user: {
+      guideApproved: true,
+      guideLocation: {lat: 37.5745, lng: 126.9800}, // 약 890m
+      residenceYears: 3,
+      interests: ["맛집", "골목길"],
+      guideStats: {
+        averageSatisfaction: 4.2,
+        totalRequestsReceived: 7,
+        completedEscortCount: 6,
+        ratedEscortCount: 5,
+      },
+    },
+  },
 ];
 
 /**
@@ -129,12 +200,18 @@ async function ensureUserDoc(db, account) {
     guideApproved: account.user.guideApproved,
     matchBlockedUntil: null,
     noShowCount: 0,
-    guideStats: defaultGuideStats,
+    guideStats: account.user.guideStats ?? defaultGuideStats,
     createdAt: now,
     updatedAt: now,
   };
   if (account.user.guideLocation) {
     doc.guideLocation = account.user.guideLocation;
+  }
+  if (account.user.residenceYears !== undefined) {
+    doc.residenceYears = account.user.residenceYears;
+  }
+  if (account.user.interests !== undefined) {
+    doc.interests = account.user.interests;
   }
   await db.collection("users").doc(account.uid).set(doc);
   console.log(
