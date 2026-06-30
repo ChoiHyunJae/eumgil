@@ -4,9 +4,6 @@ import 'package:geolocator/geolocator.dart';
 import '../services/matching_service.dart';
 
 /// 탐방자가 현재 위치 기준 1km 내 안내자를 탐색하고 동행을 요청하는 화면.
-///
-/// 화면 진입 시 GPS 위치를 자동으로 요청하고, 허용되면 바로 검색한다.
-/// 거부 시 데모 좌표(서울 시청 인근)를 사용해 검색할 수 있다.
 class GuideSearchScreen extends StatefulWidget {
   const GuideSearchScreen({super.key, this.service});
 
@@ -19,7 +16,6 @@ class GuideSearchScreen extends StatefulWidget {
 class _GuideSearchScreenState extends State<GuideSearchScreen> {
   late final MatchingService _service;
 
-  /// 에뮬레이터 데모 위치 (서울 시청 인근 — 시드 안내자 위치와 동일).
   static const double _demoLat = 37.5665;
   static const double _demoLng = 126.978;
 
@@ -253,16 +249,17 @@ class _GuideSearchScreenState extends State<GuideSearchScreen> {
 
   Widget _buildGuideCard(GuideCandidateSummary candidate) {
     final requesting = _requesting.contains(candidate.guideId);
+    final hasSatisfaction = candidate.averageSatisfaction != null;
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 12),
+      margin: const EdgeInsets.only(bottom: 16),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(20),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withValues(alpha: 0.06),
-            blurRadius: 12,
+            blurRadius: 16,
             offset: const Offset(0, 4),
           ),
         ],
@@ -272,16 +269,13 @@ class _GuideSearchScreenState extends State<GuideSearchScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // 상단: 사진 + 기본 정보
             Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                CircleAvatar(
-                  radius: 24,
-                  backgroundColor:
-                      const Color(0xFF2979FF).withValues(alpha: 0.12),
-                  child: const Icon(Icons.directions_walk_rounded,
-                      color: Color(0xFF2979FF), size: 24),
-                ),
-                const SizedBox(width: 12),
+                // 프로필 사진
+                _buildAvatar(candidate),
+                const SizedBox(width: 14),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -291,39 +285,44 @@ class _GuideSearchScreenState extends State<GuideSearchScreen> {
                           const Text(
                             '안내자',
                             style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w700,
-                                color: Color(0xFF1B2D1F)),
+                              fontSize: 17,
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFF1B2D1F),
+                            ),
                           ),
-                          const SizedBox(width: 8),
+                          const SizedBox(width: 6),
                           if (candidate.isNewGuide)
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 8, vertical: 2),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF1B8A6B)
-                                    .withValues(alpha: 0.1),
-                                borderRadius: BorderRadius.circular(20),
-                              ),
-                              child: const Text('신규',
-                                  style: TextStyle(
-                                      fontSize: 11,
-                                      color: Color(0xFF1B8A6B),
-                                      fontWeight: FontWeight.w600)),
+                            _buildBadge('신규',
+                                const Color(0xFF1B8A6B))
+                          else if (hasSatisfaction)
+                            _buildBadge(
+                              '★ ${candidate.averageSatisfaction!.toStringAsFixed(1)}',
+                              const Color(0xFFFFB300),
                             ),
                         ],
                       ),
-                      const SizedBox(height: 2),
+                      const SizedBox(height: 4),
                       Row(
                         children: [
                           const Icon(Icons.location_on_outlined,
-                              size: 14, color: Colors.grey),
+                              size: 13, color: Colors.grey),
                           const SizedBox(width: 2),
                           Text(
                             _formatDistance(candidate.distanceM),
                             style: const TextStyle(
                                 fontSize: 13, color: Colors.grey),
                           ),
+                          if (candidate.completedEscortCount > 0) ...[
+                            const SizedBox(width: 10),
+                            const Icon(Icons.check_circle_outline,
+                                size: 13, color: Colors.grey),
+                            const SizedBox(width: 2),
+                            Text(
+                              '동행 ${candidate.completedEscortCount}회',
+                              style: const TextStyle(
+                                  fontSize: 13, color: Colors.grey),
+                            ),
+                          ],
                         ],
                       ),
                     ],
@@ -331,7 +330,46 @@ class _GuideSearchScreenState extends State<GuideSearchScreen> {
                 ),
               ],
             ),
-            const SizedBox(height: 16),
+
+            // 소개말
+            if (candidate.bio != null && candidate.bio!.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF5F7FA),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  candidate.bio!,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: Color(0xFF444444),
+                    height: 1.6,
+                  ),
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+
+            // 관심 분야
+            if (candidate.interests != null &&
+                candidate.interests!.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: candidate.interests!
+                    .map((tag) => _buildInterestChip(tag))
+                    .toList(),
+              ),
+            ],
+
+            const SizedBox(height: 14),
+
+            // 요청 버튼
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
@@ -351,13 +389,64 @@ class _GuideSearchScreenState extends State<GuideSearchScreen> {
                         child: CircularProgressIndicator(
                             strokeWidth: 2, color: Colors.white),
                       )
-                    : const Text('동행 요청하기',
+                    : const Text(
+                        '동행 요청하기',
                         style: TextStyle(
-                            fontSize: 15, fontWeight: FontWeight.w600)),
+                            fontSize: 15, fontWeight: FontWeight.w600),
+                      ),
               ),
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildAvatar(GuideCandidateSummary candidate) {
+    if (candidate.photoUrl != null) {
+      return CircleAvatar(
+        radius: 32,
+        backgroundImage: NetworkImage(candidate.photoUrl!),
+        backgroundColor: const Color(0xFF2979FF).withValues(alpha: 0.1),
+        onBackgroundImageError: (_, _) {},
+      );
+    }
+    return CircleAvatar(
+      radius: 32,
+      backgroundColor: const Color(0xFF2979FF).withValues(alpha: 0.12),
+      child: const Icon(Icons.directions_walk_rounded,
+          color: Color(0xFF2979FF), size: 28),
+    );
+  }
+
+  Widget _buildBadge(String label, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+            fontSize: 11, color: color, fontWeight: FontWeight.w700),
+      ),
+    );
+  }
+
+  Widget _buildInterestChip(String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: const Color(0xFF2979FF).withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        '# $label',
+        style: const TextStyle(
+            fontSize: 12,
+            color: Color(0xFF2979FF),
+            fontWeight: FontWeight.w500),
       ),
     );
   }
