@@ -38,6 +38,10 @@ export interface UserProfile {
   residenceYears?: number;
   /** US#10: 안내자 프로필 서사 — 관심 분야. */
   interests?: string[];
+  /** 안내자 자기소개(선택). 프로필 카드에 표시된다. */
+  bio?: string;
+  /** 안내자 프로필 사진 URL(선택). 없으면 기본 아바타를 사용한다. */
+  photoUrl?: string;
   /**
    * US#17~21 / Slice 6: 매칭 후보 검색(searchGuides)에 쓰이는 안내자의 위치 좌표.
    * null/미존재면 후보 검색에서 제외된다. "현재 위치로 검색" 시점 비교용 스냅샷이며,

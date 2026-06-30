@@ -213,6 +213,12 @@ async function ensureUserDoc(db, account) {
   if (account.user.interests !== undefined) {
     doc.interests = account.user.interests;
   }
+  if (account.user.bio !== undefined) {
+    doc.bio = account.user.bio;
+  }
+  if (account.user.photoUrl !== undefined) {
+    doc.photoUrl = account.user.photoUrl;
+  }
   await db.collection("users").doc(account.uid).set(doc);
   console.log(
     `  users/${account.uid} (guideApproved=${account.user.guideApproved})`

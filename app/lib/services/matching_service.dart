@@ -1,28 +1,41 @@
 import 'package:cloud_functions/cloud_functions.dart';
 
 /// 매칭 검색 결과에 표시할 안내자 후보 한 건.
-///
-/// 백엔드 GuideCandidate(guide: UserProfile, distanceM, isNewGuide)에서 화면에
-/// 필요한 최소 필드만 추린다. UserProfile에 이름 필드가 없어 [displayName]은
-/// 현재 guideId로 fallback한다(전화번호 등 민감정보는 노출하지 않음).
 class GuideCandidateSummary {
   const GuideCandidateSummary({
     required this.guideId,
     required this.displayName,
     required this.distanceM,
     required this.isNewGuide,
+    this.bio,
+    this.photoUrl,
+    this.interests,
+    this.averageSatisfaction,
+    this.completedEscortCount = 0,
   });
 
   final String guideId;
   final String displayName;
   final double distanceM;
   final bool isNewGuide;
+
+  /// 안내자 자기소개. 없으면 null.
+  final String? bio;
+
+  /// 프로필 사진 URL. 없으면 기본 아바타를 사용한다.
+  final String? photoUrl;
+
+  /// 관심 분야 목록. 없으면 null.
+  final List<String>? interests;
+
+  /// 평균 만족도(1~5). 아직 없으면 null.
+  final double? averageSatisfaction;
+
+  /// 완료한 동행 수.
+  final int completedEscortCount;
 }
 
 /// 안내자가 받은 Requested 동행 요청 한 건.
-///
-/// 백엔드 listReceivedEscortRequests의 항목과 1:1 대응한다. 시각은 ISO 문자열로
-/// 전달되며 여기서 DateTime으로 파싱해 보관한다.
 class ReceivedEscortRequestSummary {
   const ReceivedEscortRequestSummary({
     required this.escortId,
@@ -37,13 +50,8 @@ class ReceivedEscortRequestSummary {
   final DateTime requestExpiresAt;
 }
 
-/// 매칭 Cloud Functions callable(searchGuides, requestEscort)을 감싸는 service.
-///
-/// 기존 service들과 동일하게 [FirebaseFunctions]를 주입 가능하게 하고, 인스턴스는
-/// 호출 시점에 지연 평가한다(테스트 환경 호환). 백엔드는 기본 리전(us-central1)에
-/// 배포되므로 기본 인스턴스를 사용한다.
+/// 매칭 Cloud Functions callable을 감싸는 service.
 class MatchingService {
-  /// [functions]를 주입하면 그것을, 없으면 기본 인스턴스를 사용한다(테스트용 주입).
   MatchingService([this._functions]);
 
   final FirebaseFunctions? _functions;
@@ -60,16 +68,28 @@ class MatchingService {
       'location': {'lat': lat, 'lng': lng},
     });
     final raw = (result.data['candidates'] as List<dynamic>?) ?? <dynamic>[];
-    return raw.map((dynamic e) => Map<String, dynamic>.from(e as Map)).map((
-      candidate,
-    ) {
-      final guide = Map<String, dynamic>.from(candidate['guide'] as Map);
+    return raw
+        .map((dynamic e) => Map<String, dynamic>.from(e as Map))
+        .map((candidate) {
+      final guide =
+          Map<String, dynamic>.from(candidate['guide'] as Map);
       final guideId = guide['id'] as String? ?? '';
+      final stats = guide['guideStats'] == null
+          ? null
+          : Map<String, dynamic>.from(guide['guideStats'] as Map);
+      final interestsRaw = guide['interests'] as List<dynamic>?;
       return GuideCandidateSummary(
         guideId: guideId,
         displayName: guideId,
         distanceM: (candidate['distanceM'] as num?)?.toDouble() ?? 0,
         isNewGuide: candidate['isNewGuide'] as bool? ?? false,
+        bio: guide['bio'] as String?,
+        photoUrl: guide['photoUrl'] as String?,
+        interests: interestsRaw?.map((e) => e.toString()).toList(),
+        averageSatisfaction:
+            (stats?['averageSatisfaction'] as num?)?.toDouble(),
+        completedEscortCount:
+            (stats?['completedEscortCount'] as num?)?.toInt() ?? 0,
       );
     }).toList();
   }
@@ -82,16 +102,20 @@ class MatchingService {
 
   /// 본인이 안내자인 Requested(미만료) 동행 요청 목록을 조회한다.
   Future<List<ReceivedEscortRequestSummary>>
-  listReceivedEscortRequests() async {
+      listReceivedEscortRequests() async {
     final callable = _fn.httpsCallable('listReceivedEscortRequests');
     final result = await callable.call<Map<String, dynamic>>();
-    final raw = (result.data['requests'] as List<dynamic>?) ?? <dynamic>[];
-    return raw.map((dynamic e) => Map<String, dynamic>.from(e as Map)).map((r) {
+    final raw =
+        (result.data['requests'] as List<dynamic>?) ?? <dynamic>[];
+    return raw
+        .map((dynamic e) => Map<String, dynamic>.from(e as Map))
+        .map((r) {
       return ReceivedEscortRequestSummary(
         escortId: r['escortId'] as String? ?? '',
         travelerId: r['travelerId'] as String? ?? '',
         requestedAt: DateTime.parse(r['requestedAt'] as String),
-        requestExpiresAt: DateTime.parse(r['requestExpiresAt'] as String),
+        requestExpiresAt:
+            DateTime.parse(r['requestExpiresAt'] as String),
       );
     }).toList();
   }
