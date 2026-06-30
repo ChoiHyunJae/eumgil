@@ -13,6 +13,10 @@ import {
   CreateArchiveItemOutput,
   DeleteArchiveItemInput,
   DeleteArchiveItemOutput,
+  GetAvailableDongsInput,
+  GetAvailableDongsOutput,
+  ListArchiveItemsByDongInput,
+  ListArchiveItemsByDongOutput,
   ListNearbyArchiveItemsInput,
   ListNearbyArchiveItemsOutput,
   ReportArchiveItemInput,
@@ -102,6 +106,42 @@ function resolveDongLabel(lat: number, lng: number): string {
 }
 
 /**
+ * 동 단위 입력/검색을 지원하기 위한 동 정보.
+ * 각 동의 대표 좌표(중심점)를 포함해 동 이름만으로 등록 시 exactLocation을 추정한다.
+ * label은 DONG_BOXES의 label과 동일하게 유지한다.
+ */
+const DONG_DATA: ReadonlyArray<{
+  label: string;
+  centerLat: number;
+  centerLng: number;
+}> = [
+  {label: "종로구 청운효자동 인근", centerLat: 37.5865, centerLng: 126.975},
+  {label: "종로구 사직동 인근", centerLat: 37.5715, centerLng: 126.9665},
+  {
+    label: "종로구 광화문·세종로 인근",
+    centerLat: 37.574,
+    centerLng: 126.9815,
+  },
+  {label: "종로구 혜화동 인근", centerLat: 37.5875, centerLng: 127.0025},
+];
+
+/** 등록/검색에 사용 가능한 동 이름 목록. */
+export const AVAILABLE_DONGS: ReadonlyArray<string> =
+  DONG_DATA.map((d) => d.label);
+
+/**
+ * dong 이름으로 해당 동의 대표 좌표를 반환한다. 지원하지 않는 동이면 null.
+ *
+ * @param {string} dong 동 이름.
+ * @return {{lat: number; lng: number} | null} 대표 좌표 또는 null.
+ */
+function dongToCoords(dong: string): {lat: number; lng: number} | null {
+  const found = DONG_DATA.find((d) => d.label === dong);
+  if (!found) return null;
+  return {lat: found.centerLat, lng: found.centerLng};
+}
+
+/**
  * 두 좌표 사이의 거리(미터)를 Haversine 공식으로 계산한다.
  *
  * @param {number} lat1 기준 위도.
@@ -154,7 +194,7 @@ export const createArchiveItem = onCall<
     throw new HttpsError("unauthenticated", "로그인이 필요합니다.");
   }
 
-  const {category, voiceTranscript, photoUrls, location} = request.data;
+  const {category, voiceTranscript, photoUrls, location, dong} = request.data;
 
   if (!VALID_CATEGORIES.includes(category)) {
     throw new HttpsError("invalid-argument", "유효하지 않은 카테고리입니다.");
@@ -165,12 +205,35 @@ export const createArchiveItem = onCall<
     throw new HttpsError("invalid-argument", "voiceTranscript는 필수입니다.");
   }
 
-  if (
-    !location ||
-    typeof location.lat !== "number" ||
-    typeof location.lng !== "number"
+  // location 또는 dong 중 하나는 반드시 제공해야 한다.
+  let resolvedLat: number;
+  let resolvedLng: number;
+  let resolvedDongLabel: string;
+
+  if (dong) {
+    const coords = dongToCoords(dong);
+    if (!coords) {
+      throw new HttpsError(
+        "invalid-argument",
+        `지원하지 않는 동입니다: ${dong}. getAvailableDongs로 목록을 확인하세요.`
+      );
+    }
+    resolvedLat = coords.lat;
+    resolvedLng = coords.lng;
+    resolvedDongLabel = dong;
+  } else if (
+    location &&
+    typeof location.lat === "number" &&
+    typeof location.lng === "number"
   ) {
-    throw new HttpsError("invalid-argument", "위치 좌표가 필요합니다.");
+    resolvedLat = location.lat;
+    resolvedLng = location.lng;
+    resolvedDongLabel = resolveDongLabel(location.lat, location.lng);
+  } else {
+    throw new HttpsError(
+      "invalid-argument",
+      "dong 또는 location 중 하나는 반드시 제공해야 합니다."
+    );
   }
 
   const uid = request.auth.uid;
@@ -187,9 +250,8 @@ export const createArchiveItem = onCall<
     // TODO(Slice 4): AI 요약 확인 단계 도입 시 confirmedByAuthor 흐름 재검토.
     confirmedByAuthor: true,
     photoUrls: photoUrls ?? [],
-    exactLocation: new GeoPoint(location.lat, location.lng),
-    // Slice 3 MVP: 데모 좌표는 행정동 라벨로 매핑, 범위 밖은 fallback.
-    dongLabel: resolveDongLabel(location.lat, location.lng),
+    exactLocation: new GeoPoint(resolvedLat, resolvedLng),
+    dongLabel: resolvedDongLabel,
     visibilityRadiusM: VISIBILITY_RADIUS_M,
     published: true,
     reportCount: 0,
@@ -430,4 +492,90 @@ export const listNearbyArchiveItems = onCall<
   }
 
   return {items};
+});
+
+/**
+ * 동 이름으로 해당 동의 공개된 동네 지식 목록을 조회한다.
+ * Invariant: 응답에는 행정동 표시값만 포함, 정확 좌표(exactLocation) 제외.
+ */
+export const listArchiveItemsByDong = onCall<
+  ListArchiveItemsByDongInput,
+  Promise<ListArchiveItemsByDongOutput>
+>(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "로그인이 필요합니다.");
+  }
+
+  const {dong, category} = request.data;
+  if (!dong || typeof dong !== "string" || !dong.trim()) {
+    throw new HttpsError("invalid-argument", "dong은 필수입니다.");
+  }
+  if (!AVAILABLE_DONGS.includes(dong)) {
+    throw new HttpsError(
+      "invalid-argument",
+      `지원하지 않는 동입니다: ${dong}.`
+    );
+  }
+  if (category !== undefined && !VALID_CATEGORIES.includes(category)) {
+    throw new HttpsError("invalid-argument", "유효하지 않은 카테고리입니다.");
+  }
+
+  const snap = await admin
+    .firestore()
+    .collection("archiveItems")
+    .where("dongLabel", "==", dong)
+    .get();
+
+  const items: ListArchiveItemsByDongOutput["items"] = [];
+  for (const doc of snap.docs) {
+    const item: ArchiveItem = {
+      id: doc.id,
+      ...(doc.data() as Omit<ArchiveItem, "id">),
+    };
+    if (!item.published || item.hidden) continue;
+    if (category !== undefined && item.category !== category) continue;
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const {exactLocation, ...publicView} = item;
+    items.push(publicView);
+  }
+
+  // 작성 안내자 프로필 요약 덧붙이기.
+  const authorIds = [...new Set(items.map((i) => i.authorId))];
+  const db = admin.firestore();
+  const authorSnaps = await Promise.all(
+    authorIds.map((id) => db.collection("users").doc(id).get())
+  );
+  const profileById = new Map<string, AuthorProfileSummary>();
+  authorSnaps.forEach((s, idx) => {
+    if (!s.exists) return;
+    const u = s.data() as Omit<UserProfile, "id">;
+    const summary: AuthorProfileSummary = {};
+    const years = u.residenceYears ?? u.residencyYears;
+    if (typeof years === "number") summary.residenceYears = years;
+    if (Array.isArray(u.interests) && u.interests.length > 0) {
+      summary.interests = u.interests;
+    }
+    if (summary.residenceYears !== undefined || summary.interests) {
+      profileById.set(authorIds[idx], summary);
+    }
+  });
+  for (const item of items) {
+    const profile = profileById.get(item.authorId);
+    if (profile) item.authorProfile = profile;
+  }
+
+  return {items};
+});
+
+/**
+ * 등록/검색에 사용 가능한 동 이름 목록을 반환한다.
+ */
+export const getAvailableDongs = onCall<
+  GetAvailableDongsInput,
+  Promise<GetAvailableDongsOutput>
+>((request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "로그인이 필요합니다.");
+  }
+  return Promise.resolve({dongs: [...AVAILABLE_DONGS]});
 });
