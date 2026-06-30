@@ -2,6 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../auth/auth_service.dart';
+import '../archive_list_screen.dart';
 import '../guide_search_screen.dart';
 import '../my_escort_screen.dart';
 
@@ -55,6 +56,7 @@ class _TravelerHomeScreenState extends State<TravelerHomeScreen> {
         index: _tabIndex,
         children: [
           const GuideSearchScreen(),
+          const ArchiveListScreen(),
           MyEscortScreen(currentUserId: _uid),
         ],
       ),
@@ -70,6 +72,11 @@ class _TravelerHomeScreenState extends State<TravelerHomeScreen> {
             icon: Icon(Icons.search_outlined),
             activeIcon: Icon(Icons.search),
             label: '안내자 찾기',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.auto_stories_outlined),
+            activeIcon: Icon(Icons.auto_stories),
+            label: '동네 지식',
           ),
           BottomNavigationBarItem(
             icon: Icon(Icons.directions_walk_outlined),
