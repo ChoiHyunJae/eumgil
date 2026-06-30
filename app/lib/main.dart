@@ -3,17 +3,15 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/material.dart';
 
-import 'dev/emulator_account_switcher.dart';
+import 'auth/auth_service.dart';
 import 'firebase_options.dart';
-import 'screens/admin_approval_screen.dart';
-import 'screens/archive_list_screen.dart';
-import 'screens/guide_search_screen.dart';
-import 'screens/guide_status_view.dart';
-import 'screens/my_escort_screen.dart';
+import 'screens/admin/admin_home_screen.dart';
+import 'screens/guide/guide_home_screen.dart';
+import 'screens/login_screen.dart';
+import 'screens/traveler/traveler_home_screen.dart';
 
-/// 로컬 Firebase Emulator 사용 여부. 컴파일 타임 환경변수로만 켜진다
-/// (`--dart-define=USE_EMULATOR=true`). 기본값 false이므로 실제 배포/일반
-/// 실행에서는 emulator 연결·익명 로그인이 절대 수행되지 않는다.
+/// 로컬 Firebase Emulator 사용 여부.
+/// `--dart-define=USE_EMULATOR=true`일 때만 활성화된다.
 const bool _useEmulator = bool.fromEnvironment(
   'USE_EMULATOR',
   defaultValue: false,
@@ -21,28 +19,20 @@ const bool _useEmulator = bool.fromEnvironment(
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-
   if (_useEmulator) {
     await _connectToEmulators();
   }
-
   runApp(const EumgilApp());
 }
 
-/// 로컬 emulator(Functions/Auth)에 연결하고, 익명 로그인으로 인증을 채운다.
-/// USE_EMULATOR=true일 때만 호출된다.
+/// 에뮬레이터(Functions/Auth)에 연결한다.
+/// 익명 로그인은 하지 않는다 — 로그인 화면에서 역할을 선택해 로그인한다.
 Future<void> _connectToEmulators() async {
   FirebaseFunctions.instance.useFunctionsEmulator('localhost', 5001);
   await FirebaseAuth.instance.useAuthEmulator('localhost', 9099);
-  if (FirebaseAuth.instance.currentUser == null) {
-    await FirebaseAuth.instance.signInAnonymously();
-  }
 }
 
-/// Slice 0(Issue #2) 스캐폴딩: 빈 홈 화면만 존재하는 앱 골격.
-/// 실제 화면/기능은 이후 슬라이스에서 callable function과 함께 채워진다.
 class EumgilApp extends StatelessWidget {
   const EumgilApp({super.key});
 
@@ -50,71 +40,79 @@ class EumgilApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: '이음길',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
+        useMaterial3: true,
+        colorSchemeSeed: const Color(0xFF1B8A6B),
+        scaffoldBackgroundColor: const Color(0xFFF5F7FA),
+        appBarTheme: const AppBarTheme(elevation: 0, scrolledUnderElevation: 0),
+        cardTheme: CardThemeData(
+          elevation: 0,
+          color: Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: Colors.white,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.grey.shade200),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.grey.shade200),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: Color(0xFF1B8A6B), width: 2),
+          ),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        ),
+        elevatedButtonTheme: ElevatedButtonThemeData(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF1B8A6B),
+            foregroundColor: Colors.white,
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+            textStyle: const TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
       ),
-      home: const HomeScreen(),
+      home: const _AppEntry(),
     );
   }
 }
 
-class HomeScreen extends StatelessWidget {
-  const HomeScreen({super.key});
+/// 인증 상태에 따라 로그인 화면 또는 역할별 홈 화면으로 라우팅한다.
+class _AppEntry extends StatelessWidget {
+  const _AppEntry();
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('이음길'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.person_search),
-            tooltip: '주변 안내자 찾기',
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => const GuideSearchScreen(),
-              ),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.directions_walk),
-            tooltip: '내 동행',
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => MyEscortScreen(
-                  currentUserId: FirebaseAuth.instance.currentUser?.uid,
-                ),
-              ),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.travel_explore),
-            tooltip: '주변 동네 지식',
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => const ArchiveListScreen(),
-              ),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.admin_panel_settings),
-            tooltip: '운영자: 안내자 신청 승인',
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => const AdminApprovalScreen(),
-              ),
-            ),
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          // USE_EMULATOR=true(컴파일 타임 const)일 때만 포함된다. 일반/배포
-          // 빌드에서는 트리쉐이킹으로 스위처와 로그인 로직이 모두 제거된다.
-          if (_useEmulator) const EmulatorAccountSwitcher(),
-          const Expanded(child: GuideStatusView()),
-        ],
-      ),
+    return ListenableBuilder(
+      listenable: AuthService.instance,
+      builder: (context, _) {
+        if (!AuthService.instance.isSignedIn) {
+          return const LoginScreen();
+        }
+        switch (AuthService.instance.role!) {
+          case UserRole.guide:
+            return const GuideHomeScreen();
+          case UserRole.traveler:
+            return const TravelerHomeScreen();
+          case UserRole.admin:
+            return const AdminHomeScreen();
+        }
+      },
     );
   }
 }
