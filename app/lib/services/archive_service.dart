@@ -53,7 +53,7 @@ class ArchiveItemSummary {
   final List<String>? interests;
 }
 
-/// 동네 지식 등록 Cloud Functions callable(createArchiveItem)을 감싸는 service.
+/// 동네 지식 등록/검색 Cloud Functions callable을 감싸는 service.
 ///
 /// 기존 [GuideService]/[AdminService]와 동일하게 [FirebaseFunctions]를 주입
 /// 가능하게 하고, 인스턴스는 호출 시점에 지연 평가한다(테스트 환경 호환).
@@ -66,22 +66,39 @@ class ArchiveService {
 
   FirebaseFunctions get _fn => _functions ?? FirebaseFunctions.instance;
 
-  /// 동네 지식을 등록한다. 성공 시 생성된 문서 id를 반환한다.
+  /// 서버에서 지원하는 동 이름 목록을 조회한다.
+  Future<List<String>> getAvailableDongs() async {
+    final callable = _fn.httpsCallable('getAvailableDongs');
+    final result = await callable.call<Map<String, dynamic>>({});
+    final raw = (result.data['dongs'] as List<dynamic>?) ?? <dynamic>[];
+    return raw.map((e) => e.toString()).toList();
+  }
+
+  /// 동네 지식을 동 단위로 등록한다. 성공 시 생성된 문서 id를 반환한다.
   ///
-  /// 백엔드는 [voiceTranscript](필수)와 [location](필수)을 검증하며, 호출자가
-  /// 승인된 안내자가 아니면 permission-denied로 실패한다.
+  /// [dong]과 [location] 중 하나는 반드시 제공해야 한다.
+  /// [dong]을 제공하면 해당 동의 대표 좌표를 사용한다.
   Future<String> createArchiveItem({
     required ArchiveCategory category,
     required String voiceTranscript,
-    required double lat,
-    required double lng,
+    String? dong,
+    double? lat,
+    double? lng,
     List<String>? photoUrls,
   }) async {
+    assert(
+      dong != null || (lat != null && lng != null),
+      'dong 또는 lat/lng 중 하나는 반드시 제공해야 합니다.',
+    );
     final payload = <String, dynamic>{
       'category': category.wireValue,
       'voiceTranscript': voiceTranscript,
-      'location': {'lat': lat, 'lng': lng},
     };
+    if (dong != null) {
+      payload['dong'] = dong;
+    } else {
+      payload['location'] = {'lat': lat, 'lng': lng};
+    }
     if (photoUrls != null && photoUrls.isNotEmpty) {
       payload['photoUrls'] = photoUrls;
     }
@@ -108,10 +125,43 @@ class ArchiveService {
     }
     final callable = _fn.httpsCallable('listNearbyArchiveItems');
     final result = await callable.call<Map<String, dynamic>>(payload);
-    final raw = (result.data['items'] as List<dynamic>?) ?? <dynamic>[];
-    return raw.map((dynamic e) => Map<String, dynamic>.from(e as Map)).map((
-      item,
-    ) {
+    return _parseItems(result.data);
+  }
+
+  /// 동 이름으로 해당 동의 공개된 동네 지식 목록을 조회한다.
+  ///
+  /// [dong]은 [getAvailableDongs]에서 반환된 값 중 하나여야 한다.
+  Future<List<ArchiveItemSummary>> listByDong({
+    required String dong,
+    ArchiveCategory? category,
+  }) async {
+    final payload = <String, dynamic>{'dong': dong};
+    if (category != null) {
+      payload['category'] = category.wireValue;
+    }
+    final callable = _fn.httpsCallable('listArchiveItemsByDong');
+    final result = await callable.call<Map<String, dynamic>>(payload);
+    return _parseItems(result.data);
+  }
+
+  /// 동네 지식을 신고한다. 성공 시 누적 신고 수(reportCount)를 반환한다.
+  Future<int> report({required String itemId, String? reason}) async {
+    final trimmed = reason?.trim();
+    final hasReason = trimmed != null && trimmed.isNotEmpty;
+    final callable = _fn.httpsCallable('reportArchiveItem');
+    final result = await callable.call<Map<String, dynamic>>({
+      'itemId': itemId,
+      if (hasReason) 'reason': trimmed,
+    });
+    return (result.data['reportCount'] as num?)?.toInt() ?? 0;
+  }
+
+  /// items 응답 페이로드를 [ArchiveItemSummary] 목록으로 파싱한다.
+  List<ArchiveItemSummary> _parseItems(Map<String, dynamic> data) {
+    final raw = (data['items'] as List<dynamic>?) ?? <dynamic>[];
+    return raw
+        .map((dynamic e) => Map<String, dynamic>.from(e as Map))
+        .map((item) {
       final summary = (item['aiSummary'] as String?)?.trim();
       final transcript = item['voiceTranscript'] as String? ?? '';
       final profile = item['authorProfile'] == null
@@ -127,20 +177,5 @@ class ArchiveService {
         interests: interestsRaw?.map((e) => e.toString()).toList(),
       );
     }).toList();
-  }
-
-  /// 동네 지식을 신고한다. 성공 시 누적 신고 수(reportCount)를 반환한다.
-  ///
-  /// 백엔드는 [itemId](필수)만 사용하며 [reason]은 선택값이다. reason이
-  /// null/빈 문자열이면 요청에서 생략한다.
-  Future<int> report({required String itemId, String? reason}) async {
-    final trimmed = reason?.trim();
-    final hasReason = trimmed != null && trimmed.isNotEmpty;
-    final callable = _fn.httpsCallable('reportArchiveItem');
-    final result = await callable.call<Map<String, dynamic>>({
-      'itemId': itemId,
-      'reason': ?(hasReason ? trimmed : null),
-    });
-    return (result.data['reportCount'] as num?)?.toInt() ?? 0;
   }
 }
