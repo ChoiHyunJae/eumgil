@@ -116,7 +116,7 @@ class _ArchiveCreateScreenState extends State<ArchiveCreateScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               DropdownButtonFormField<ArchiveCategory>(
-                value: _category,
+                initialValue: _category,
                 decoration: const InputDecoration(labelText: '분류'),
                 hint: const Text('분류를 선택하세요'),
                 items: const [
@@ -175,7 +175,7 @@ class _ArchiveCreateScreenState extends State<ArchiveCreateScreen> {
               _loadingDongs
                   ? const Center(child: CircularProgressIndicator())
                   : DropdownButtonFormField<String>(
-                      value: _selectedDong,
+                      initialValue: _selectedDong,
                       decoration: const InputDecoration(
                         labelText: '동네(지역) 선택',
                         hintText: '동네를 선택해 주세요',
