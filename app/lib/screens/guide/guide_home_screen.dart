@@ -4,6 +4,7 @@ import '../../auth/auth_service.dart';
 import '../archive_create_screen.dart';
 import '../archive_list_screen.dart';
 import '../received_escort_requests_screen.dart';
+import 'guide_profile_screen.dart';
 
 /// 안내자 전용 홈 화면.
 ///
@@ -22,6 +23,14 @@ class _GuideHomeScreenState extends State<GuideHomeScreen> {
 
   Future<void> _signOut() async {
     await AuthService.instance.signOut();
+  }
+
+  Future<void> _openProfile() async {
+    await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => const GuideProfileScreen(),
+      ),
+    );
   }
 
   @override
@@ -62,6 +71,11 @@ class _GuideHomeScreenState extends State<GuideHomeScreen> {
             labelStyle: const TextStyle(color: Colors.white),
             side: BorderSide.none,
           ),
+        ),
+        IconButton(
+          icon: const Icon(Icons.person_outline_rounded),
+          tooltip: '프로필 편집',
+          onPressed: _openProfile,
         ),
         IconButton(
           icon: const Icon(Icons.logout_rounded),
