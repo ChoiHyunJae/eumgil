@@ -354,19 +354,6 @@ class _GuideSearchScreenState extends State<GuideSearchScreen> {
               ),
             ],
 
-            // 관심 분야
-            if (candidate.interests != null &&
-                candidate.interests!.isNotEmpty) ...[
-              const SizedBox(height: 10),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: candidate.interests!
-                    .map((tag) => _buildInterestChip(tag))
-                    .toList(),
-              ),
-            ],
-
             const SizedBox(height: 14),
 
             // 요청 버튼
@@ -434,20 +421,4 @@ class _GuideSearchScreenState extends State<GuideSearchScreen> {
     );
   }
 
-  Widget _buildInterestChip(String label) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: const Color(0xFF2979FF).withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Text(
-        '# $label',
-        style: const TextStyle(
-            fontSize: 12,
-            color: Color(0xFF2979FF),
-            fontWeight: FontWeight.w500),
-      ),
-    );
-  }
 }
