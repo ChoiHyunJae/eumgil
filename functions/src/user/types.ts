@@ -55,10 +55,15 @@ export type GuideApplicationViewStatus =
 export type GetMyGuideApplicationStatusInput = Record<string, never>;
 export interface GetMyGuideApplicationStatusOutput {
   status: GuideApplicationViewStatus;
-  /**
-   * 상태를 결정한 신청 문서 id. 신청 이력으로 status가 정해진 경우
-   * (pending/rejected, 또는 미승인 상태에서 approved 이력으로 판단된 경우) 포함.
-   * 신청 이력 없이 판단된 경우(none, 또는 guideApproved 플래그만으로 approved)는 생략.
-   */
   applicationId?: string;
+}
+
+/** 안내자 프로필(소개말·사진 URL) 업데이트. */
+export interface UpdateUserProfileInput {
+  bio?: string;
+  photoUrl?: string;
+}
+export interface UpdateUserProfileOutput {
+  bio: string | null;
+  photoUrl: string | null;
 }
