@@ -2,13 +2,19 @@ import * as admin from "firebase-admin";
 import {GeoPoint, Timestamp} from "firebase-admin/firestore";
 import type {CallableRequest} from "firebase-functions/v2/https";
 import {
+  acceptCounterOffer,
+  acknowledgeEscortResponse,
   listReceivedEscortRequests,
+  proposeCounterOffer,
   requestEscort,
   respondToRequest,
   searchGuides,
 } from "../src/matching";
 import type {
+  AcceptCounterOfferOutput,
+  AcknowledgeEscortResponseOutput,
   ListReceivedEscortRequestsOutput,
+  ProposeCounterOfferOutput,
   RequestEscortOutput,
   RespondToRequestOutput,
   SearchGuidesOutput,
@@ -148,6 +154,9 @@ describe("matching module", () => {
     status: string;
     requestExpiresAt: Timestamp;
     requestedAt?: Timestamp;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    counterProposal?: any;
+    counterProposalCount?: number;
   }): Promise<string> {
     const now = Timestamp.now();
     const requestedAt = fields.requestedAt ?? now;
@@ -158,9 +167,12 @@ describe("matching module", () => {
       status: fields.status,
       requestedAt,
       respondedAt: null,
+      travelerNotifiedAt: null,
       requestExpiresAt: fields.requestExpiresAt,
       meetingLocation: null,
       meetingTime: null,
+      counterProposal: fields.counterProposal ?? null,
+      counterProposalCount: fields.counterProposalCount ?? 0,
       cancelledBy: null,
       cancelledAt: null,
       isSameDayCancellation: null,
@@ -962,5 +974,241 @@ describe("matching module", () => {
     );
     const ids = result.requests.map((r) => r.escortId);
     expect(ids.indexOf(olderId)).toBeLessThan(ids.indexOf(newerId));
+  });
+
+  // ---- proposeCounterOffer / acceptCounterOffer ----
+
+  it("당사자가 재제안하면 Requested를 유지하며 counterProposal이 저장된다", async () => {
+    const escortId = await seedEscort({
+      guideId: "cp-guide",
+      travelerId: "cp-traveler",
+      status: "Requested",
+      requestExpiresAt: future(),
+    });
+
+    const result = await runCallable<ProposeCounterOfferOutput>(
+      proposeCounterOffer,
+      buildRequest("cp-guide", {
+        escortId,
+        meetingTime: "2026-08-01T10:00:00.000Z",
+        meetingLocation: {lat: 37.5665, lng: 126.978},
+        message: "이 시간은 어렵고 오후는 어떨까요?",
+      })
+    );
+    expect(result.counterProposal.proposedBy).toBe("guide");
+    expect(result.counterProposalCount).toBe(1);
+
+    const data = (await db.collection("escorts").doc(escortId).get()).data();
+    expect(data?.status).toBe("Requested");
+    expect(data?.counterProposal).not.toBeNull();
+    expect(data?.counterProposalCount).toBe(1);
+  });
+
+  it("당사자가 아니면 재제안할 수 없다", async () => {
+    const escortId = await seedEscort({
+      guideId: "cp-perm-guide",
+      travelerId: "cp-perm-traveler",
+      status: "Requested",
+      requestExpiresAt: future(),
+    });
+    await expect(
+      runCallable<ProposeCounterOfferOutput>(
+        proposeCounterOffer,
+        buildRequest("cp-stranger", {
+          escortId,
+          meetingTime: "2026-08-01T10:00:00.000Z",
+          meetingLocation: {lat: 37.5665, lng: 126.978},
+        })
+      )
+    ).rejects.toMatchObject({code: "permission-denied"});
+  });
+
+  it("Requested가 아니면 재제안할 수 없다", async () => {
+    const escortId = await seedEscort({
+      guideId: "cp-status-guide",
+      travelerId: "cp-status-traveler",
+      status: "MeetingConfirmed",
+      requestExpiresAt: future(),
+    });
+    await expect(
+      runCallable<ProposeCounterOfferOutput>(
+        proposeCounterOffer,
+        buildRequest("cp-status-guide", {
+          escortId,
+          meetingTime: "2026-08-01T10:00:00.000Z",
+          meetingLocation: {lat: 37.5665, lng: 126.978},
+        })
+      )
+    ).rejects.toMatchObject({code: "failed-precondition"});
+  });
+
+  it("재제안 횟수가 3회를 넘으면 거부된다", async () => {
+    const escortId = await seedEscort({
+      guideId: "cp-max-guide",
+      travelerId: "cp-max-traveler",
+      status: "Requested",
+      requestExpiresAt: future(),
+      counterProposalCount: 3,
+    });
+    await expect(
+      runCallable<ProposeCounterOfferOutput>(
+        proposeCounterOffer,
+        buildRequest("cp-max-guide", {
+          escortId,
+          meetingTime: "2026-08-01T10:00:00.000Z",
+          meetingLocation: {lat: 37.5665, lng: 126.978},
+        })
+      )
+    ).rejects.toMatchObject({code: "failed-precondition"});
+  });
+
+  it("탐방자는 동네 지식으로 장소를 지정해 재제안할 수 없다", async () => {
+    const escortId = await seedEscort({
+      guideId: "cp-item-guide",
+      travelerId: "cp-item-traveler",
+      status: "Requested",
+      requestExpiresAt: future(),
+    });
+    await expect(
+      runCallable<ProposeCounterOfferOutput>(
+        proposeCounterOffer,
+        buildRequest("cp-item-traveler", {
+          escortId,
+          meetingTime: "2026-08-01T10:00:00.000Z",
+          meetingArchiveItemId: "no-such-item",
+        })
+      )
+    ).rejects.toMatchObject({code: "invalid-argument"});
+  });
+
+  it("상대방이 재제안을 수락하면 MeetingConfirmed로 전환된다", async () => {
+    const escortId = await seedEscort({
+      guideId: "co-guide",
+      travelerId: "co-traveler",
+      status: "Requested",
+      requestExpiresAt: future(),
+    });
+    await runCallable<ProposeCounterOfferOutput>(
+      proposeCounterOffer,
+      buildRequest("co-guide", {
+        escortId,
+        meetingTime: "2026-08-01T10:00:00.000Z",
+        meetingLocation: {lat: 37.5665, lng: 126.978},
+      })
+    );
+
+    const result = await runCallable<AcceptCounterOfferOutput>(
+      acceptCounterOffer,
+      buildRequest("co-traveler", {escortId})
+    );
+    expect(result.status).toBe("MeetingConfirmed");
+
+    const data = (await db.collection("escorts").doc(escortId).get()).data();
+    expect(data?.status).toBe("MeetingConfirmed");
+    expect(data?.counterProposal).toBeNull();
+    expect(data?.meetingLocation).toBeInstanceOf(GeoPoint);
+  });
+
+  it("본인이 보낸 재제안은 스스로 수락할 수 없다", async () => {
+    const escortId = await seedEscort({
+      guideId: "co-self-guide",
+      travelerId: "co-self-traveler",
+      status: "Requested",
+      requestExpiresAt: future(),
+    });
+    await runCallable<ProposeCounterOfferOutput>(
+      proposeCounterOffer,
+      buildRequest("co-self-guide", {
+        escortId,
+        meetingTime: "2026-08-01T10:00:00.000Z",
+        meetingLocation: {lat: 37.5665, lng: 126.978},
+      })
+    );
+    await expect(
+      runCallable<AcceptCounterOfferOutput>(
+        acceptCounterOffer,
+        buildRequest("co-self-guide", {escortId})
+      )
+    ).rejects.toMatchObject({code: "invalid-argument"});
+  });
+
+  it("응답 대기 중인 재제안이 없으면 수락할 수 없다", async () => {
+    const escortId = await seedEscort({
+      guideId: "co-none-guide",
+      travelerId: "co-none-traveler",
+      status: "Requested",
+      requestExpiresAt: future(),
+    });
+    await expect(
+      runCallable<AcceptCounterOfferOutput>(
+        acceptCounterOffer,
+        buildRequest("co-none-traveler", {escortId})
+      )
+    ).rejects.toMatchObject({code: "failed-precondition"});
+  });
+
+  // ---- requestEscort with proposedMeetingTime ----
+
+  it("탐방자가 요청 시 제안한 만남 시간이 저장된다", async () => {
+    await seedGuide("re-time-guide");
+    const result = await runCallable<RequestEscortOutput>(
+      requestEscort,
+      buildRequest("re-time-traveler", {
+        guideId: "re-time-guide",
+        proposedMeetingTime: "2026-08-01T10:00:00.000Z",
+      })
+    );
+    const data = (await db.collection("escorts").doc(result.escortId).get())
+      .data();
+    expect(data?.proposedMeetingTime).not.toBeNull();
+  });
+
+  it("받은 요청 목록에 제안 시간이 포함된다", async () => {
+    await seedGuide("re-time-guide2");
+    const result = await runCallable<RequestEscortOutput>(
+      requestEscort,
+      buildRequest("re-time-traveler2", {
+        guideId: "re-time-guide2",
+        proposedMeetingTime: "2026-08-01T10:00:00.000Z",
+      })
+    );
+    const list = await runCallable<ListReceivedEscortRequestsOutput>(
+      listReceivedEscortRequests,
+      buildRequest("re-time-guide2", {})
+    );
+    const item = list.requests.find((r) => r.escortId === result.escortId);
+    expect(item?.proposedMeetingTime).toBe("2026-08-01T10:00:00.000Z");
+  });
+
+  // ---- acknowledgeEscortResponse ----
+
+  it("확인 처리하면 travelerNotifiedAt이 기록된다", async () => {
+    const escortId = await seedEscort({
+      guideId: "ack-guide",
+      travelerId: "ack-traveler",
+      status: "Rejected",
+      requestExpiresAt: future(),
+    });
+    await runCallable<AcknowledgeEscortResponseOutput>(
+      acknowledgeEscortResponse,
+      buildRequest("ack-traveler", {escortId})
+    );
+    const data = (await db.collection("escorts").doc(escortId).get()).data();
+    expect(data?.travelerNotifiedAt).not.toBeNull();
+  });
+
+  it("당사자가 아니면 확인 처리할 수 없다", async () => {
+    const escortId = await seedEscort({
+      guideId: "ack-perm-guide",
+      travelerId: "ack-perm-traveler",
+      status: "Rejected",
+      requestExpiresAt: future(),
+    });
+    await expect(
+      runCallable<AcknowledgeEscortResponseOutput>(
+        acknowledgeEscortResponse,
+        buildRequest("ack-stranger", {escortId})
+      )
+    ).rejects.toMatchObject({code: "permission-denied"});
   });
 });

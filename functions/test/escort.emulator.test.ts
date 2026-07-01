@@ -93,6 +93,7 @@ describe("escort module", () => {
     meetingLocation?: GeoPoint | null;
     requestedAt?: Timestamp;
     respondedAt?: Timestamp | null;
+    travelerNotifiedAt?: Timestamp | null;
     guideArrivalConfirmedAt?: Timestamp | null;
     travelerArrivalConfirmedAt?: Timestamp | null;
     guideCompletedAt?: Timestamp | null;
@@ -106,6 +107,7 @@ describe("escort module", () => {
       status: fields.status,
       requestedAt: fields.requestedAt ?? now,
       respondedAt: fields.respondedAt ?? now,
+      travelerNotifiedAt: fields.travelerNotifiedAt ?? null,
       requestExpiresAt: Timestamp.fromMillis(now.toMillis() + 3600_000),
       meetingLocation: fields.meetingLocation ?? null,
       meetingTime: fields.meetingTime ?? null,
@@ -224,12 +226,12 @@ describe("escort module", () => {
     expect(result.escorts.map((e) => e.escortId)).not.toContain(other);
   });
 
-  it("최근 24시간 이내 거절된 동행은 탐방자에게 노출된다", async () => {
+  it("아직 확인하지 않은 거절은 탐방자에게 노출된다", async () => {
     const rejected = await seedEscort({
       guideId: "es-rej-g",
       travelerId: "es-rej-t",
       status: "Rejected",
-      respondedAt: Timestamp.fromMillis(Date.now() - 60 * 60 * 1000), // 1시간 전
+      respondedAt: Timestamp.fromMillis(Date.now() - 60 * 60 * 1000),
     });
     const result = await runCallable<ListMyEscortsOutput>(
       listMyEscorts,
@@ -237,16 +239,17 @@ describe("escort module", () => {
     );
     const ids = result.escorts.map((e) => e.escortId);
     expect(ids).toContain(rejected);
+    const item = result.escorts.find((e) => e.escortId === rejected);
+    expect(item?.responseAcknowledged).toBe(false);
   });
 
-  it("24시간 넘게 지난 거절은 목록에서 제외된다", async () => {
+  it("확인 처리된 거절은 목록에서 제외된다(재로그인 시 반복 안내 방지)", async () => {
     const rejected = await seedEscort({
       guideId: "es-oldrej-g",
       travelerId: "es-oldrej-t",
       status: "Rejected",
-      respondedAt: Timestamp.fromMillis(
-        Date.now() - 25 * 60 * 60 * 1000
-      ), // 25시간 전
+      respondedAt: Timestamp.fromMillis(Date.now() - 25 * 60 * 60 * 1000),
+      travelerNotifiedAt: Timestamp.now(), // 이미 확인 처리됨
     });
     const result = await runCallable<ListMyEscortsOutput>(
       listMyEscorts,

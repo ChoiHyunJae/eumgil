@@ -35,6 +35,42 @@ class GuideCandidateSummary {
   final int completedEscortCount;
 }
 
+/// 만남 시간/장소 재제안("이 시간은 안 되니 이 시간은 어떠세요") 정보.
+class CounterProposalSummary {
+  const CounterProposalSummary({
+    required this.proposedBy,
+    required this.proposedAt,
+    required this.meetingTime,
+    required this.meetingLat,
+    required this.meetingLng,
+    this.meetingLocationLabel,
+    this.message,
+  });
+
+  /// 'guide' 또는 'traveler'. 이 제안을 보낸 쪽.
+  final String proposedBy;
+  final DateTime proposedAt;
+  final DateTime meetingTime;
+  final double meetingLat;
+  final double meetingLng;
+  final String? meetingLocationLabel;
+  final String? message;
+
+  static CounterProposalSummary? fromMap(Map<String, dynamic>? map) {
+    if (map == null) return null;
+    final loc = Map<String, dynamic>.from(map['meetingLocation'] as Map);
+    return CounterProposalSummary(
+      proposedBy: map['proposedBy'] as String? ?? '',
+      proposedAt: DateTime.parse(map['proposedAt'] as String),
+      meetingTime: DateTime.parse(map['meetingTime'] as String),
+      meetingLat: (loc['lat'] as num).toDouble(),
+      meetingLng: (loc['lng'] as num).toDouble(),
+      meetingLocationLabel: map['meetingLocationLabel'] as String?,
+      message: map['message'] as String?,
+    );
+  }
+}
+
 /// 안내자가 받은 Requested 동행 요청 한 건.
 class ReceivedEscortRequestSummary {
   const ReceivedEscortRequestSummary({
@@ -43,6 +79,8 @@ class ReceivedEscortRequestSummary {
     required this.requestedAt,
     required this.requestExpiresAt,
     this.requestedArchiveItemId,
+    this.proposedMeetingTime,
+    this.counterProposal,
   });
 
   final String escortId;
@@ -52,6 +90,12 @@ class ReceivedEscortRequestSummary {
 
   /// 탐방자가 특정 동네 지식을 보고 요청한 경우 그 문서 id. 없으면 null.
   final String? requestedArchiveItemId;
+
+  /// 탐방자가 요청 시 미리 제안한 만남 시간. 없으면 null.
+  final DateTime? proposedMeetingTime;
+
+  /// 응답 대기 중인 재제안(상대방이 새 시간/장소를 제시한 상태). 없으면 null.
+  final CounterProposalSummary? counterProposal;
 }
 
 /// 매칭 Cloud Functions callable을 감싸는 service.
@@ -101,13 +145,19 @@ class MatchingService {
   ///
   /// [archiveItemId]를 주면 탐방자가 특정 동네 지식을 보고 요청한 것으로
   /// 기록된다(안내자에게 어떤 장소/이야기에 관심이 있는지 전달).
+  /// [proposedMeetingTime]을 주면 탐방자가 원하는 만남 시간을 미리 제안한다.
   Future<void> requestEscort({
     required String guideId,
     String? archiveItemId,
+    DateTime? proposedMeetingTime,
   }) async {
     final payload = <String, dynamic>{'guideId': guideId};
     if (archiveItemId != null) {
       payload['archiveItemId'] = archiveItemId;
+    }
+    if (proposedMeetingTime != null) {
+      payload['proposedMeetingTime'] =
+          proposedMeetingTime.toUtc().toIso8601String();
     }
     final callable = _fn.httpsCallable('requestEscort');
     await callable.call<Map<String, dynamic>>(payload);
@@ -122,12 +172,19 @@ class MatchingService {
     return raw
         .map((dynamic e) => Map<String, dynamic>.from(e as Map))
         .map((r) {
+      final proposedTime = r['proposedMeetingTime'] as String?;
+      final counterMap = r['counterProposal'] == null
+          ? null
+          : Map<String, dynamic>.from(r['counterProposal'] as Map);
       return ReceivedEscortRequestSummary(
         escortId: r['escortId'] as String? ?? '',
         travelerId: r['travelerId'] as String? ?? '',
         requestedAt: DateTime.parse(r['requestedAt'] as String),
         requestExpiresAt: DateTime.parse(r['requestExpiresAt'] as String),
         requestedArchiveItemId: r['requestedArchiveItemId'] as String?,
+        proposedMeetingTime:
+            (proposedTime != null) ? DateTime.parse(proposedTime) : null,
+        counterProposal: CounterProposalSummary.fromMap(counterMap),
       );
     }).toList();
   }
@@ -154,5 +211,47 @@ class MatchingService {
         'meetingLocation': {'lat': meetingLat, 'lng': meetingLng},
       if (accept) 'meetingTime': meetingTime,
     });
+  }
+
+  /// 만남 시간/장소를 재제안한다("이 시간은 어려운데 이 시간은 어떠세요").
+  /// Requested 상태에서만 가능하며 escort 당사자만 호출할 수 있다.
+  ///
+  /// 장소는 [meetingArchiveItemId] 또는 [meetingLat]/[meetingLng] 중 하나로
+  /// 지정할 수 있다. 아무것도 지정하지 않으면 서버가 기존 만남 장소를 그대로
+  /// 유지한다(시간만 재제안하는 흔한 경우).
+  Future<void> proposeCounterOffer({
+    required String escortId,
+    required DateTime meetingTime,
+    double? meetingLat,
+    double? meetingLng,
+    String? meetingArchiveItemId,
+    String? message,
+  }) async {
+    final callable = _fn.httpsCallable('proposeCounterOffer');
+    await callable.call<Map<String, dynamic>>({
+      'escortId': escortId,
+      'meetingTime': meetingTime.toUtc().toIso8601String(),
+      if (meetingArchiveItemId != null)
+        'meetingArchiveItemId': meetingArchiveItemId,
+      if (meetingArchiveItemId == null &&
+          meetingLat != null &&
+          meetingLng != null)
+        'meetingLocation': {'lat': meetingLat, 'lng': meetingLng},
+      if (message != null && message.trim().isNotEmpty)
+        'message': message.trim(),
+    });
+  }
+
+  /// 상대방이 보낸 재제안을 수락해 MeetingConfirmed로 전환한다.
+  Future<void> acceptCounterOffer({required String escortId}) async {
+    final callable = _fn.httpsCallable('acceptCounterOffer');
+    await callable.call<Map<String, dynamic>>({'escortId': escortId});
+  }
+
+  /// 상대방의 응답(승인/거절) 결과 안내를 확인했음을 기록한다.
+  /// 이후 같은 결과가 재로그인 시 반복 안내되지 않게 한다.
+  Future<void> acknowledgeEscortResponse({required String escortId}) async {
+    final callable = _fn.httpsCallable('acknowledgeEscortResponse');
+    await callable.call<Map<String, dynamic>>({'escortId': escortId});
   }
 }

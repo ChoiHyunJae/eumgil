@@ -40,6 +40,12 @@ export interface RequestEscortInput {
    * archiveItems.authorId === guideId 인지 서버가 검증한다.
    */
   archiveItemId?: string;
+  /**
+   * 탐방자가 미리 원하는 만남 시간을 제안하는 경우(선택). archiveItemId와 함께
+   * 주로 사용하지만 독립적으로도 줄 수 있다. ISO 8601 문자열.
+   * 안내자는 이 시간을 그대로 수락하거나 respondToRequest의 재제안으로 바꿀 수 있다.
+   */
+  proposedMeetingTime?: string;
 }
 export interface RequestEscortOutput {
   escortId: string;
@@ -83,6 +89,10 @@ export interface ReceivedEscortRequestSummary {
   requestExpiresAt: string;
   /** 탐방자가 특정 동네 지식을 보고 요청한 경우 그 문서 id. 없으면 null. */
   requestedArchiveItemId: string | null;
+  /** 탐방자가 미리 제안한 만남 시간(ISO 8601). 없으면 null. */
+  proposedMeetingTime: string | null;
+  /** 상대방이 재제안한 시간/장소가 응답 대기 중이면 포함. 없으면 null. */
+  counterProposal: EscortCounterProposalView | null;
 }
 
 /**
@@ -93,3 +103,54 @@ export type ListReceivedEscortRequestsInput = Record<string, never>;
 export interface ListReceivedEscortRequestsOutput {
   requests: ReceivedEscortRequestSummary[];
 }
+
+/** 클라이언트에 노출되는 재제안 뷰(Timestamp는 ISO 8601 문자열). */
+export interface EscortCounterProposalView {
+  proposedBy: "guide" | "traveler";
+  proposedAt: string;
+  meetingTime: string;
+  meetingLocation: {lat: number; lng: number};
+  meetingLocationLabel: string | null;
+  message: string | null;
+}
+
+/**
+ * 만남 시간/장소를 재제안한다("이 시간은 어려운데 이 시간은 어떠세요").
+ * Requested 상태에서만 호출 가능하며, 호출자는 escort 당사자(guide 또는
+ * traveler)여야 한다. 상태는 Requested를 유지하고 counterProposal 필드만
+ * 갱신한다. counterProposalCount가 3 이상이면 추가 재제안을 거부한다
+ * (무한 핑퐁 방지 — 이 이후에는 수락/거절만 가능).
+ */
+export interface ProposeCounterOfferInput {
+  escortId: string;
+  meetingTime: string;
+  meetingLocation?: {lat: number; lng: number};
+  meetingArchiveItemId?: string;
+  message?: string;
+}
+export interface ProposeCounterOfferOutput {
+  counterProposal: EscortCounterProposalView;
+  counterProposalCount: number;
+}
+
+/**
+ * 상대방이 보낸 재제안(counterProposal)을 수락한다.
+ * 호출자는 재제안을 보낸 쪽이 아닌 상대여야 하며, 수락 시 그 제안대로
+ * MeetingConfirmed로 전환되고 counterProposal은 정리(null)된다.
+ */
+export interface AcceptCounterOfferInput {
+  escortId: string;
+}
+export interface AcceptCounterOfferOutput {
+  status: "MeetingConfirmed";
+}
+
+/**
+ * 안내자/탐방자가 상대방의 응답(승인/거절) 결과 안내를 확인했음을 기록한다.
+ * 이후 listMyEscorts/listReceivedEscortRequests에서 같은 결과를 다시
+ * 안내하지 않도록(재로그인/재접속 시 반복 노출 방지) travelerNotifiedAt을 설정한다.
+ */
+export interface AcknowledgeEscortResponseInput {
+  escortId: string;
+}
+export type AcknowledgeEscortResponseOutput = Record<string, never>;
