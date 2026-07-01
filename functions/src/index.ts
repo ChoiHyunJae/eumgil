@@ -35,4 +35,5 @@ export * from "./escort";
 export * from "./group";
 export * from "./admin";
 export * from "./user";
+export * from "./user/profile";
 export * from "./scheduled";
