@@ -682,11 +682,35 @@ export const proposeCounterOffer = onCall<
     typeof meetingLocation.lng === "number"
   ) {
     resolvedLocation = new GeoPoint(meetingLocation.lat, meetingLocation.lng);
+  } else if (escort.counterProposal) {
+    // 직전 재제안이 있으면(핑퐁 중) 그 장소를 유지한다(예: 상대가 시간만
+    // 바꿔 다시 제안하는 경우).
+    resolvedLocation = escort.counterProposal.meetingLocation;
+    resolvedLabel = escort.counterProposal.meetingLocationLabel ?? null;
   } else if (escort.meetingLocation) {
-    // 장소를 새로 지정하지 않으면 기존 만남 장소를 그대로 유지한다
-    // (예: "시간만 바꾸고 싶어요" 같은 흔한 재제안 시나리오).
+    // (Requested 상태에서는 보통 비어 있지만) 이미 확정된 장소가 있으면
+    // 그대로 유지한다.
     resolvedLocation = escort.meetingLocation;
     resolvedLabel = escort.meetingLocationLabel ?? null;
+  } else if (escort.requestedArchiveItemId) {
+    // 탐방자가 안내자의 동네 지식을 보고 요청한 경우, 아직 장소가 확정되지
+    // 않았어도 그 동네 지식의 위치를 기본 장소로 사용한다(시간만 재조정하는
+    // 흔한 시나리오: "이 시간은 어려운데 이 시간은 어떠세요").
+    const itemSnap = await db
+      .collection("archiveItems")
+      .doc(escort.requestedArchiveItemId)
+      .get();
+    const item = itemSnap.data() as
+      | {exactLocation?: GeoPoint; dongLabel?: string}
+      | undefined;
+    if (!item?.exactLocation) {
+      throw new HttpsError(
+        "invalid-argument",
+        "제안할 만남 장소(meetingLocation 또는 meetingArchiveItemId)가 필요합니다."
+      );
+    }
+    resolvedLocation = item.exactLocation;
+    resolvedLabel = item.dongLabel ?? null;
   } else {
     throw new HttpsError(
       "invalid-argument",
