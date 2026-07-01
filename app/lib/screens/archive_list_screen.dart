@@ -56,41 +56,25 @@ class _ArchiveListScreenState extends State<ArchiveListScreen> {
   }
 
   /// 이 동네 지식을 보고 작성 안내자에게 동행을 요청한다.
+  /// 원하는 만남 시간을 먼저 선택(달력/시계)해서 함께 제안할 수 있다.
+  /// 바텀시트가 취소(뒤로가기/바깥 탭)로 닫히면 요청을 진행하지 않는다.
   Future<void> _requestFromItem(ArchiveItemSummary item) async {
     if (_requesting.contains(item.id)) return;
 
-    final confirmed = await showDialog<bool>(
+    final result = await showModalBottomSheet<_ProposeTimeResult>(
       context: context,
-      builder: (_) => AlertDialog(
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Text('안내 요청'),
-        content: const Text(
-          '이 곳을 직접 보고 설명을 듣고 싶으신가요?\n'
-          '이 동네 지식을 등록한 안내자에게 동행을 요청합니다.',
-          style: TextStyle(height: 1.6),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('취소'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style:
-                ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2979FF)),
-            child: const Text('요청하기'),
-          ),
-        ],
-      ),
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _ProposeTimeSheet(itemTitle: item.body),
     );
-    if (confirmed != true || !mounted) return;
+    if (result == null || !mounted) return; // 취소됨
 
     setState(() => _requesting.add(item.id));
     try {
       await _matchingService.requestEscort(
         guideId: item.authorId,
         archiveItemId: item.id,
+        proposedMeetingTime: result.dateTime,
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -404,6 +388,203 @@ class _ReportReasonDialogState extends State<_ReportReasonDialog> {
           child: const Text('신고'),
         ),
       ],
+    );
+  }
+}
+
+/// 동네 지식 기반 요청 시 선택한 만남 시간(시간 선택 안 함도 허용).
+class _ProposeTimeResult {
+  const _ProposeTimeResult({this.dateTime});
+
+  /// 탐방자가 제안하는 만남 시간. 선택하지 않으면 null(안내자가 정하도록 위임).
+  final DateTime? dateTime;
+}
+
+/// 탐방자가 동네 지식을 보고 요청할 때 원하는 만남 시간을 먼저 선택하는
+/// 바텀시트. 고령 사용자를 고려해 달력/시계 선택만 사용하고, 시간을 정하지
+/// 않고도 요청을 진행할 수 있게 한다.
+class _ProposeTimeSheet extends StatefulWidget {
+  const _ProposeTimeSheet({required this.itemTitle});
+
+  final String itemTitle;
+
+  @override
+  State<_ProposeTimeSheet> createState() => _ProposeTimeSheetState();
+}
+
+class _ProposeTimeSheetState extends State<_ProposeTimeSheet> {
+  DateTime? _date;
+  TimeOfDay? _time;
+
+  Future<void> _pickDate() async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _date ?? now,
+      firstDate: now,
+      lastDate: now.add(const Duration(days: 60)),
+      helpText: '희망 만남 날짜 선택',
+      confirmText: '선택',
+      cancelText: '취소',
+    );
+    if (picked != null) setState(() => _date = picked);
+  }
+
+  Future<void> _pickTime() async {
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: _time ?? const TimeOfDay(hour: 10, minute: 0),
+      helpText: '희망 만남 시간 선택',
+      confirmText: '선택',
+      cancelText: '취소',
+    );
+    if (picked != null) setState(() => _time = picked);
+  }
+
+  bool get _hasSelection => _date != null && _time != null;
+
+  void _confirmWithTime() {
+    if (!_hasSelection) return;
+    Navigator.of(context).pop(
+      _ProposeTimeResult(
+        dateTime: DateTime(
+          _date!.year,
+          _date!.month,
+          _date!.day,
+          _time!.hour,
+          _time!.minute,
+        ),
+      ),
+    );
+  }
+
+  void _confirmWithoutTime() {
+    Navigator.of(context).pop(const _ProposeTimeResult());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+      ),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 12),
+          Container(
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: Colors.grey.shade300,
+              borderRadius: BorderRadius.circular(4),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 4),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                '언제 만나고 싶으세요?',
+                style: Theme.of(context)
+                    .textTheme
+                    .titleLarge
+                    ?.copyWith(fontWeight: FontWeight.w800),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                '"${widget.itemTitle}"에 대한 안내를 요청합니다.\n'
+                '희망 시간은 선택 사항이며, 정하지 않아도 요청할 수 있어요.',
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade600, height: 1.5),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _pickDate,
+                    icon: const Icon(Icons.calendar_today_rounded,
+                        color: Color(0xFF2979FF)),
+                    label: Text(
+                      _date == null
+                          ? '날짜 선택'
+                          : '${_date!.month}월 ${_date!.day}일',
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      side: BorderSide(color: Colors.grey.shade300),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _pickTime,
+                    icon: const Icon(Icons.access_time_rounded,
+                        color: Color(0xFF2979FF)),
+                    label: Text(
+                      _time == null ? '시간 선택' : _time!.format(context),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      side: BorderSide(color: Colors.grey.shade300),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+            child: SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: _hasSelection ? _confirmWithTime : null,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF2979FF),
+                  foregroundColor: Colors.white,
+                  disabledBackgroundColor: Colors.grey.shade300,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14)),
+                ),
+                child: const Text('이 시간으로 요청하기',
+                    style:
+                        TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+            child: SizedBox(
+              width: double.infinity,
+              child: TextButton(
+                onPressed: _confirmWithoutTime,
+                child: const Text(
+                  '시간은 나중에 정할게요',
+                  style: TextStyle(color: Colors.grey),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

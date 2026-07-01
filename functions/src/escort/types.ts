@@ -76,6 +76,12 @@ export interface MyEscortSummary {
   meetingTime: string | null;
   /** 만남 장소 표시 라벨(안내자가 동네 지식으로 지정한 경우). 없으면 null. */
   meetingLocationLabel: string | null;
+  /**
+   * 승인(MeetingConfirmed)/거절(Rejected) 결과를 상대방이 이미 확인했는지.
+   * true면 클라이언트가 안내 다이얼로그를 다시 띄우지 않는다.
+   * (acknowledgeEscortResponse 호출로 true가 된다.)
+   */
+  responseAcknowledged: boolean;
 }
 export interface ListMyEscortsOutput {
   escorts: MyEscortSummary[];

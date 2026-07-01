@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../services/escort_service.dart';
+import '../services/matching_service.dart';
 
 /// 현재 로그인 사용자(traveler 또는 guide)의 진행 중 동행을 보여주고,
 /// 시작 전 동행을 취소할 수 있는 최소 화면.
@@ -8,10 +9,19 @@ import '../services/escort_service.dart';
 /// listMyEscorts로 목록을 조회하고 cancelEscort로 취소한다. confirmMeeting/
 /// checkArrival 등 그 이후 단계는 이번 범위가 아니다.
 class MyEscortScreen extends StatefulWidget {
-  const MyEscortScreen({super.key, this.service, this.currentUserId});
+  const MyEscortScreen({
+    super.key,
+    this.service,
+    this.matchingService,
+    this.currentUserId,
+  });
 
   /// 테스트에서 가짜 구현을 주입하기 위한 선택적 의존성. null이면 기본 생성.
   final EscortService? service;
+
+  /// acknowledgeEscortResponse/proposeCounterOffer 등에서 쓰는 매칭 서비스
+  /// (테스트용 주입). null이면 기본 생성.
+  final MatchingService? matchingService;
 
   /// 현재 로그인 사용자 uid. travelerId와 일치하면 만족도 평가 입력을 노출한다.
   /// null이거나 guide면 평가 입력을 보여주지 않는다(guide가 rating을 보내지 않도록).
@@ -23,6 +33,7 @@ class MyEscortScreen extends StatefulWidget {
 
 class _MyEscortScreenState extends State<MyEscortScreen> {
   late final EscortService _service;
+  late final MatchingService _matchingService;
 
   bool _loading = true;
   Object? _error;
@@ -35,10 +46,13 @@ class _MyEscortScreenState extends State<MyEscortScreen> {
   void initState() {
     super.initState();
     _service = widget.service ?? EscortService();
+    _matchingService = widget.matchingService ?? MatchingService();
     _load();
   }
 
-  /// 이미 안내 다이얼로그를 보여준 escortId 집합(중복 알림 방지).
+  /// 이번 세션에서 이미 안내 다이얼로그를 보여준 escortId 집합. 서버의
+  /// responseAcknowledged와 별개로, 같은 새로고침 사이클 안에서 중복 호출을
+  /// 막기 위한 보조 가드다(실제 "1회성"의 근거는 서버 필드).
   final Set<String> _notified = <String>{};
 
   Future<void> _load() async {
@@ -53,14 +67,25 @@ class _MyEscortScreenState extends State<MyEscortScreen> {
         _escorts = escorts;
         _loading = false;
       });
-      // 승인(MeetingConfirmed)/거절(Rejected) 상태인 항목 중 아직 안내하지
-      // 않은 것만 다이얼로그로 알린다.
+      // 승인(MeetingConfirmed)/거절(Rejected) 상태이고 서버가 아직 확인
+      // 처리(responseAcknowledged)하지 않은 항목만 다이얼로그로 안내한다.
+      // 확인 후에는 acknowledgeEscortResponse를 호출해 재로그인 시 같은
+      // 안내가 반복 노출되지 않게 한다.
       for (final escort in escorts) {
         if ((escort.status == 'MeetingConfirmed' ||
                 escort.status == 'Rejected') &&
+            !escort.responseAcknowledged &&
             !_notified.contains(escort.escortId)) {
           _notified.add(escort.escortId);
           await _notifyIfNeeded(escort);
+          try {
+            await _matchingService.acknowledgeEscortResponse(
+              escortId: escort.escortId,
+            );
+          } catch (_) {
+            // 확인 처리 실패는 치명적이지 않다(다음 조회에서 다시 안내될 수
+            // 있음). 사용자 흐름을 막지 않기 위해 무시한다.
+          }
         }
       }
     } catch (e) {
@@ -94,7 +119,7 @@ class _MyEscortScreenState extends State<MyEscortScreen> {
           ? '미정'
           : _formatDateTime(escort.meetingTime!.toLocal());
       final place = escort.meetingLocationLabel ?? '안내자가 지정한 장소';
-      await showDialog<void>(
+      final wantsCounter = await showDialog<bool>(
         context: context,
         builder: (_) => AlertDialog(
           shape:
@@ -108,8 +133,12 @@ class _MyEscortScreenState extends State<MyEscortScreen> {
             style: const TextStyle(height: 1.6),
           ),
           actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('다른 시간 제안하기'),
+            ),
             ElevatedButton(
-              onPressed: () => Navigator.pop(context),
+              onPressed: () => Navigator.pop(context, false),
               style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF1B8A6B)),
               child: const Text('확인했어요'),
@@ -117,6 +146,9 @@ class _MyEscortScreenState extends State<MyEscortScreen> {
           ],
         ),
       );
+      if (wantsCounter == true && mounted) {
+        await _openCounterOfferSheet(escort);
+      }
     } else if (escort.status == 'Rejected') {
       await showDialog<void>(
         context: context,
@@ -144,6 +176,39 @@ class _MyEscortScreenState extends State<MyEscortScreen> {
   String _formatDateTime(DateTime dt) {
     return '${dt.month}월 ${dt.day}일 ${dt.hour.toString().padLeft(2, '0')}:'
         '${dt.minute.toString().padLeft(2, '0')}';
+  }
+
+  /// 탐방자가 안내자에게 다른 시간을 재제안한다. 장소는 기존 만남 장소를
+  /// 그대로 유지하고 시간만 새로 선택한다(가장 흔한 시나리오: "이 시간은
+  /// 안 되니 이 시간은 어떠세요").
+  Future<void> _openCounterOfferSheet(MyEscortSummary escort) async {
+    final picked = await showModalBottomSheet<DateTime>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _CounterOfferTimeSheet(
+        initialTime: escort.meetingTime,
+      ),
+    );
+    if (picked == null || !mounted) return;
+
+    setState(() => _processing.add(escort.escortId));
+    try {
+      // 장소는 지정하지 않는다 — 서버가 기존 만남 장소를 그대로 유지한다
+      // (탐방자는 지도/동네 지식 선택 권한이 없어 시간만 재제안).
+      await _matchingService.proposeCounterOffer(
+        escortId: escort.escortId,
+        meetingTime: picked,
+      );
+      if (!mounted) return;
+      _snack('새로운 시간을 제안했습니다. 안내자의 응답을 기다려 주세요.');
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      _snack('제안에 실패했습니다: $e', success: false);
+    } finally {
+      if (mounted) setState(() => _processing.remove(escort.escortId));
+    }
   }
 
   Future<void> _cancel(MyEscortSummary escort) async {
@@ -607,6 +672,175 @@ class _MidTerminateDialogState extends State<_MidTerminateDialog> {
           child: const Text('확인'),
         ),
       ],
+    );
+  }
+}
+
+/// 재제안할 만남 시간을 달력/시계로 선택하는 바텀시트.
+/// 고령 사용자를 고려해 텍스트 입력 없이 날짜/시간 선택기만 사용한다.
+class _CounterOfferTimeSheet extends StatefulWidget {
+  const _CounterOfferTimeSheet({this.initialTime});
+
+  final DateTime? initialTime;
+
+  @override
+  State<_CounterOfferTimeSheet> createState() =>
+      _CounterOfferTimeSheetState();
+}
+
+class _CounterOfferTimeSheetState extends State<_CounterOfferTimeSheet> {
+  DateTime? _date;
+  TimeOfDay? _time;
+
+  Future<void> _pickDate() async {
+    final now = DateTime.now();
+    final base = widget.initialTime ?? now;
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _date ?? (base.isBefore(now) ? now : base),
+      firstDate: now,
+      lastDate: now.add(const Duration(days: 60)),
+      helpText: '새 만남 날짜 선택',
+      confirmText: '선택',
+      cancelText: '취소',
+    );
+    if (picked != null) setState(() => _date = picked);
+  }
+
+  Future<void> _pickTime() async {
+    final base = widget.initialTime;
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: _time ??
+          (base != null
+              ? TimeOfDay(hour: base.hour, minute: base.minute)
+              : const TimeOfDay(hour: 10, minute: 0)),
+      helpText: '새 만남 시간 선택',
+      confirmText: '선택',
+      cancelText: '취소',
+    );
+    if (picked != null) setState(() => _time = picked);
+  }
+
+  bool get _canConfirm => _date != null && _time != null;
+
+  void _confirm() {
+    if (!_canConfirm) return;
+    Navigator.of(context).pop(DateTime(
+      _date!.year,
+      _date!.month,
+      _date!.day,
+      _time!.hour,
+      _time!.minute,
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+      ),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 12),
+          Container(
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: Colors.grey.shade300,
+              borderRadius: BorderRadius.circular(4),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
+            child: Text(
+              '새로운 시간 제안하기',
+              style: Theme.of(context)
+                  .textTheme
+                  .titleLarge
+                  ?.copyWith(fontWeight: FontWeight.w800),
+            ),
+          ),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 20),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                '만남 장소는 그대로 유지됩니다.',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _pickDate,
+                    icon: const Icon(Icons.calendar_today_rounded,
+                        color: Color(0xFF1B8A6B)),
+                    label: Text(
+                      _date == null
+                          ? '날짜 선택'
+                          : '${_date!.month}월 ${_date!.day}일',
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      side: BorderSide(color: Colors.grey.shade300),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _pickTime,
+                    icon: const Icon(Icons.access_time_rounded,
+                        color: Color(0xFF1B8A6B)),
+                    label: Text(
+                      _time == null ? '시간 선택' : _time!.format(context),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      side: BorderSide(color: Colors.grey.shade300),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+            child: SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: _canConfirm ? _confirm : null,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1B8A6B),
+                  foregroundColor: Colors.white,
+                  disabledBackgroundColor: Colors.grey.shade300,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14)),
+                ),
+                child: const Text('이 시간으로 제안하기',
+                    style:
+                        TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

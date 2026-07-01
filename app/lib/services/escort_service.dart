@@ -12,6 +12,7 @@ class MyEscortSummary {
     required this.status,
     this.meetingTime,
     this.meetingLocationLabel,
+    this.responseAcknowledged = false,
   });
 
   final String escortId;
@@ -22,6 +23,10 @@ class MyEscortSummary {
 
   /// 만남 장소 표시 라벨(안내자가 동네 지식으로 지정한 경우). 없으면 null.
   final String? meetingLocationLabel;
+
+  /// 승인/거절 결과를 상대방이 이미 확인했는지. true면 안내 다이얼로그를
+  /// 다시 띄우지 않는다.
+  final bool responseAcknowledged;
 }
 
 /// escort 생명주기 Cloud Functions callable(listMyEscorts, cancelEscort)을
@@ -50,6 +55,8 @@ class EscortService {
         meetingTime: (meetingTime != null && meetingTime.isNotEmpty)
             ? DateTime.parse(meetingTime)
             : null,
+        meetingLocationLabel: m['meetingLocationLabel'] as String?,
+        responseAcknowledged: m['responseAcknowledged'] as bool? ?? false,
       );
     }).toList();
   }
