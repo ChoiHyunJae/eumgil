@@ -74,6 +74,8 @@ export interface MyEscortSummary {
   status: EscortStatus;
   /** 만남 확정 시각(ISO 8601). 미확정이면 null. */
   meetingTime: string | null;
+  /** 만남 장소 표시 라벨(안내자가 동네 지식으로 지정한 경우). 없으면 null. */
+  meetingLocationLabel: string | null;
 }
 export interface ListMyEscortsOutput {
   escorts: MyEscortSummary[];

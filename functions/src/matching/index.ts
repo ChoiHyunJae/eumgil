@@ -219,7 +219,7 @@ export const requestEscort = onCall<
     throw new HttpsError("unauthenticated", "로그인이 필요합니다.");
   }
 
-  const {guideId} = request.data;
+  const {guideId, archiveItemId} = request.data;
   if (!guideId) {
     throw new HttpsError("invalid-argument", "guideId가 필요합니다.");
   }
@@ -240,6 +240,25 @@ export const requestEscort = onCall<
   const guide = guideSnap.data() as Omit<UserProfile, "id">;
   if (!guide.guideApproved) {
     throw new HttpsError("failed-precondition", "승인된 안내자가 아닙니다.");
+  }
+
+  // 탐방자가 특정 동네 지식을 보고 요청한 경우: 해당 문서가 존재하고
+  // 그 작성자(authorId)가 요청 대상 안내자와 일치하는지 검증한다.
+  if (archiveItemId) {
+    const itemSnap = await db
+      .collection("archiveItems")
+      .doc(archiveItemId)
+      .get();
+    if (!itemSnap.exists) {
+      throw new HttpsError("not-found", "동네 지식을 찾을 수 없습니다.");
+    }
+    const authorId = itemSnap.data()?.authorId as string | undefined;
+    if (authorId !== guideId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "해당 동네 지식은 이 안내자가 등록한 것이 아닙니다."
+      );
+    }
   }
 
   const now = Timestamp.now();
@@ -291,6 +310,8 @@ export const requestEscort = onCall<
     requestExpiresAt,
     meetingLocation: null,
     meetingTime: null,
+    meetingLocationLabel: null,
+    requestedArchiveItemId: archiveItemId ?? null,
     cancelledBy: null,
     cancelledAt: null,
     isSameDayCancellation: null,
@@ -327,7 +348,13 @@ export const respondToRequest = onCall<
     throw new HttpsError("unauthenticated", "로그인이 필요합니다.");
   }
 
-  const {escortId, accept, meetingLocation, meetingTime} = request.data;
+  const {
+    escortId,
+    accept,
+    meetingLocation,
+    meetingArchiveItemId,
+    meetingTime,
+  } = request.data;
   if (!escortId) {
     throw new HttpsError("invalid-argument", "escortId가 필요합니다.");
   }
@@ -372,27 +399,65 @@ export const respondToRequest = onCall<
     );
   }
 
-  // 수락 시 만남 장소·시간 필수(Accepted를 거치지 않고 MeetingConfirmed로 확정).
-  if (
-    !meetingLocation ||
-    typeof meetingLocation.lat !== "number" ||
-    typeof meetingLocation.lng !== "number" ||
-    !meetingTime
-  ) {
-    throw new HttpsError(
-      "invalid-argument",
-      "수락 시 만남 장소와 시간이 필요합니다."
-    );
+  // 수락 시 만남 장소·시간 필수. 장소는 좌표(meetingLocation) 또는 안내자 본인의
+  // 동네 지식(meetingArchiveItemId) 중 하나로 지정할 수 있다(Accepted를 거치지
+  // 않고 곧바로 MeetingConfirmed로 확정).
+  if (!meetingTime) {
+    throw new HttpsError("invalid-argument", "수락 시 만남 시간이 필요합니다.");
   }
   const meetingDate = new Date(meetingTime);
   if (Number.isNaN(meetingDate.getTime())) {
     throw new HttpsError("invalid-argument", "만남 시간 형식이 올바르지 않습니다.");
   }
 
+  let resolvedLocation: GeoPoint;
+  let resolvedLabel: string | null = null;
+
+  if (meetingArchiveItemId) {
+    const itemSnap = await db
+      .collection("archiveItems")
+      .doc(meetingArchiveItemId)
+      .get();
+    if (!itemSnap.exists) {
+      throw new HttpsError("not-found", "동네 지식을 찾을 수 없습니다.");
+    }
+    const item = itemSnap.data() as {
+      authorId?: string;
+      exactLocation?: GeoPoint;
+      dongLabel?: string;
+    };
+    if (item.authorId !== request.auth.uid) {
+      throw new HttpsError(
+        "invalid-argument",
+        "본인이 등록한 동네 지식만 만남 장소로 지정할 수 있습니다."
+      );
+    }
+    if (!item.exactLocation) {
+      throw new HttpsError(
+        "failed-precondition",
+        "동네 지식에 위치 정보가 없습니다."
+      );
+    }
+    resolvedLocation = item.exactLocation;
+    resolvedLabel = item.dongLabel ?? null;
+  } else if (
+    meetingLocation &&
+    typeof meetingLocation.lat === "number" &&
+    typeof meetingLocation.lng === "number"
+  ) {
+    resolvedLocation = new GeoPoint(meetingLocation.lat, meetingLocation.lng);
+  } else {
+    throw new HttpsError(
+      "invalid-argument",
+      "수락 시 만남 장소(meetingLocation 또는 meetingArchiveItemId)가 필요합니다."
+    );
+  }
+
   await ref.update({
     status: "MeetingConfirmed",
     respondedAt: now,
-    meetingLocation: new GeoPoint(meetingLocation.lat, meetingLocation.lng),
+    meetingLocation: resolvedLocation,
+    meetingLocationLabel: resolvedLabel,
     meetingTime: Timestamp.fromDate(meetingDate),
     updatedAt: now,
   });
@@ -435,6 +500,7 @@ export const listReceivedEscortRequests = onCall<
       travelerId: escort.travelerId,
       requestedAt: escort.requestedAt.toDate().toISOString(),
       requestExpiresAt: escort.requestExpiresAt.toDate().toISOString(),
+      requestedArchiveItemId: escort.requestedArchiveItemId ?? null,
     }));
 
   return {requests};

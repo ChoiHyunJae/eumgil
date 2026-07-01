@@ -38,6 +38,17 @@ export interface Escort {
   /** US#26: 수락 후 만남 장소·시간 확정(Accepted → MeetingConfirmed). */
   meetingLocation: GeoPoint | null;
   meetingTime: Timestamp | null;
+  /**
+   * 만남 장소를 사람이 읽을 수 있는 라벨로 표시(예: 안내자의 동네 지식 제목/동 이름).
+   * 안내자가 본인 동네 지식을 만남 장소로 선택한 경우 그 제목이 들어간다.
+   * 수동 좌표 입력이면 null.
+   */
+  meetingLocationLabel?: string | null;
+  /**
+   * 탐방자가 특정 동네 지식을 보고 동행을 요청한 경우, 그 동네 지식 문서 id.
+   * 안내자 찾기 화면에서 일반 요청을 보낸 경우는 null.
+   */
+  requestedArchiveItemId?: string | null;
   /** US#27~29: 동행 시작 전 취소 가능. 누가 취소했는지. */
   cancelledBy: EscortParty | null;
   cancelledAt: Timestamp | null;

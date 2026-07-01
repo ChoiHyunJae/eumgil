@@ -80,3 +80,13 @@ export type GetAvailableDongsInput = Record<string, never>;
 export interface GetAvailableDongsOutput {
   dongs: string[];
 }
+
+/**
+ * 호출자 본인이 등록한 동네 지식 목록을 조회한다.
+ * 안내자가 동행 만남 장소를 본인 동네 지식 중에서 선택할 때 사용한다.
+ * 숨김(hidden) 여부와 관계없이 본인 글은 모두 노출한다(자기 관리용).
+ */
+export type ListMyArchiveItemsInput = Record<string, never>;
+export interface ListMyArchiveItemsOutput {
+  items: ArchiveItemOwnerView[];
+}

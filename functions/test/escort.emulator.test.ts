@@ -92,6 +92,7 @@ describe("escort module", () => {
     meetingTime?: Timestamp | null;
     meetingLocation?: GeoPoint | null;
     requestedAt?: Timestamp;
+    respondedAt?: Timestamp | null;
     guideArrivalConfirmedAt?: Timestamp | null;
     travelerArrivalConfirmedAt?: Timestamp | null;
     guideCompletedAt?: Timestamp | null;
@@ -104,7 +105,7 @@ describe("escort module", () => {
       travelerId: fields.travelerId,
       status: fields.status,
       requestedAt: fields.requestedAt ?? now,
-      respondedAt: now,
+      respondedAt: fields.respondedAt ?? now,
       requestExpiresAt: Timestamp.fromMillis(now.toMillis() + 3600_000),
       meetingLocation: fields.meetingLocation ?? null,
       meetingTime: fields.meetingTime ?? null,
@@ -221,6 +222,38 @@ describe("escort module", () => {
       buildRequest("es-viewer", {})
     );
     expect(result.escorts.map((e) => e.escortId)).not.toContain(other);
+  });
+
+  it("최근 24시간 이내 거절된 동행은 탐방자에게 노출된다", async () => {
+    const rejected = await seedEscort({
+      guideId: "es-rej-g",
+      travelerId: "es-rej-t",
+      status: "Rejected",
+      respondedAt: Timestamp.fromMillis(Date.now() - 60 * 60 * 1000), // 1시간 전
+    });
+    const result = await runCallable<ListMyEscortsOutput>(
+      listMyEscorts,
+      buildRequest("es-rej-t", {})
+    );
+    const ids = result.escorts.map((e) => e.escortId);
+    expect(ids).toContain(rejected);
+  });
+
+  it("24시간 넘게 지난 거절은 목록에서 제외된다", async () => {
+    const rejected = await seedEscort({
+      guideId: "es-oldrej-g",
+      travelerId: "es-oldrej-t",
+      status: "Rejected",
+      respondedAt: Timestamp.fromMillis(
+        Date.now() - 25 * 60 * 60 * 1000
+      ), // 25시간 전
+    });
+    const result = await runCallable<ListMyEscortsOutput>(
+      listMyEscorts,
+      buildRequest("es-oldrej-t", {})
+    );
+    const ids = result.escorts.map((e) => e.escortId);
+    expect(ids).not.toContain(rejected);
   });
 
   it("meetingTime은 ISO 문자열 또는 null로 반환된다", async () => {

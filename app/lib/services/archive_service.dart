@@ -30,6 +30,7 @@ enum ArchiveCategory {
 class ArchiveItemSummary {
   const ArchiveItemSummary({
     required this.id,
+    required this.authorId,
     required this.category,
     required this.body,
     this.dongLabel,
@@ -38,6 +39,10 @@ class ArchiveItemSummary {
   });
 
   final String id;
+
+  /// 작성 안내자 uid. 탐방자가 이 동네 지식을 보고 동행을 요청할 때 사용한다.
+  final String authorId;
+
   final ArchiveCategory category;
 
   /// 본문. aiSummary가 있으면 그것을, 없으면 voiceTranscript를 사용한다.
@@ -144,6 +149,14 @@ class ArchiveService {
     return _parseItems(result.data);
   }
 
+  /// 호출자 본인이 등록한 동네 지식 목록을 조회한다(hidden 여부 무관).
+  /// 안내자가 동행 만남 장소를 본인 동네 지식 중에서 선택할 때 사용한다.
+  Future<List<ArchiveItemSummary>> listMine() async {
+    final callable = _fn.httpsCallable('listMyArchiveItems');
+    final result = await callable.call<Map<String, dynamic>>({});
+    return _parseItems(result.data);
+  }
+
   /// 동네 지식을 신고한다. 성공 시 누적 신고 수(reportCount)를 반환한다.
   Future<int> report({required String itemId, String? reason}) async {
     final trimmed = reason?.trim();
@@ -170,6 +183,7 @@ class ArchiveService {
       final interestsRaw = profile?['interests'] as List<dynamic>?;
       return ArchiveItemSummary(
         id: item['id'] as String? ?? '',
+        authorId: item['authorId'] as String? ?? '',
         category: ArchiveCategory.fromWire(item['category'] as String?),
         body: (summary != null && summary.isNotEmpty) ? summary : transcript,
         dongLabel: item['dongLabel'] as String?,

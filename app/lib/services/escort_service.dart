@@ -11,6 +11,7 @@ class MyEscortSummary {
     required this.travelerId,
     required this.status,
     this.meetingTime,
+    this.meetingLocationLabel,
   });
 
   final String escortId;
@@ -18,6 +19,9 @@ class MyEscortSummary {
   final String travelerId;
   final String status;
   final DateTime? meetingTime;
+
+  /// 만남 장소 표시 라벨(안내자가 동네 지식으로 지정한 경우). 없으면 null.
+  final String? meetingLocationLabel;
 }
 
 /// escort 생명주기 Cloud Functions callable(listMyEscorts, cancelEscort)을
