@@ -134,8 +134,18 @@ export const listMyEscorts = onCall<
     byId.set(doc.id, {id: doc.id, ...(doc.data() as Omit<Escort, "id">)});
   }
 
+  // 거절(Rejected)은 탐방자가 결과를 확인할 수 있도록 응답 후 24시간까지만
+  // 목록에 노출한다(영구 누적 방지). 그 외 만남 전·중 상태는 항상 노출한다.
+  const now = Timestamp.now();
+  const RECENT_REJECTED_MS = 24 * 60 * 60 * 1000;
+  const isRecentRejection = (e: Escort): boolean =>
+    e.status === "Rejected" &&
+    e.respondedAt != null &&
+    now.toMillis() - e.respondedAt.toMillis() < RECENT_REJECTED_MS;
+
   const escorts: MyEscortSummary[] = [...byId.values()]
-    .filter((e) => ACTIVE_ESCORT_STATUSES.includes(e.status))
+    .filter((e) => ACTIVE_ESCORT_STATUSES.includes(e.status) ||
+      isRecentRejection(e))
     .sort((a, b) => a.requestedAt.toMillis() - b.requestedAt.toMillis())
     .map((e) => ({
       escortId: e.id,
@@ -143,6 +153,7 @@ export const listMyEscorts = onCall<
       travelerId: e.travelerId,
       status: e.status,
       meetingTime: e.meetingTime ? e.meetingTime.toDate().toISOString() : null,
+      meetingLocationLabel: e.meetingLocationLabel ?? null,
     }));
 
   return {escorts};

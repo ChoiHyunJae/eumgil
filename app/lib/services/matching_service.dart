@@ -42,12 +42,16 @@ class ReceivedEscortRequestSummary {
     required this.travelerId,
     required this.requestedAt,
     required this.requestExpiresAt,
+    this.requestedArchiveItemId,
   });
 
   final String escortId;
   final String travelerId;
   final DateTime requestedAt;
   final DateTime requestExpiresAt;
+
+  /// 탐방자가 특정 동네 지식을 보고 요청한 경우 그 문서 id. 없으면 null.
+  final String? requestedArchiveItemId;
 }
 
 /// 매칭 Cloud Functions callable을 감싸는 service.
@@ -71,8 +75,7 @@ class MatchingService {
     return raw
         .map((dynamic e) => Map<String, dynamic>.from(e as Map))
         .map((candidate) {
-      final guide =
-          Map<String, dynamic>.from(candidate['guide'] as Map);
+      final guide = Map<String, dynamic>.from(candidate['guide'] as Map);
       final guideId = guide['id'] as String? ?? '';
       final stats = guide['guideStats'] == null
           ? null
@@ -95,9 +98,19 @@ class MatchingService {
   }
 
   /// 해당 안내자에게 동행 요청을 생성한다.
-  Future<void> requestEscort({required String guideId}) async {
+  ///
+  /// [archiveItemId]를 주면 탐방자가 특정 동네 지식을 보고 요청한 것으로
+  /// 기록된다(안내자에게 어떤 장소/이야기에 관심이 있는지 전달).
+  Future<void> requestEscort({
+    required String guideId,
+    String? archiveItemId,
+  }) async {
+    final payload = <String, dynamic>{'guideId': guideId};
+    if (archiveItemId != null) {
+      payload['archiveItemId'] = archiveItemId;
+    }
     final callable = _fn.httpsCallable('requestEscort');
-    await callable.call<Map<String, dynamic>>({'guideId': guideId});
+    await callable.call<Map<String, dynamic>>(payload);
   }
 
   /// 본인이 안내자인 Requested(미만료) 동행 요청 목록을 조회한다.
@@ -105,8 +118,7 @@ class MatchingService {
       listReceivedEscortRequests() async {
     final callable = _fn.httpsCallable('listReceivedEscortRequests');
     final result = await callable.call<Map<String, dynamic>>();
-    final raw =
-        (result.data['requests'] as List<dynamic>?) ?? <dynamic>[];
+    final raw = (result.data['requests'] as List<dynamic>?) ?? <dynamic>[];
     return raw
         .map((dynamic e) => Map<String, dynamic>.from(e as Map))
         .map((r) {
@@ -114,25 +126,32 @@ class MatchingService {
         escortId: r['escortId'] as String? ?? '',
         travelerId: r['travelerId'] as String? ?? '',
         requestedAt: DateTime.parse(r['requestedAt'] as String),
-        requestExpiresAt:
-            DateTime.parse(r['requestExpiresAt'] as String),
+        requestExpiresAt: DateTime.parse(r['requestExpiresAt'] as String),
+        requestedArchiveItemId: r['requestedArchiveItemId'] as String?,
       );
     }).toList();
   }
 
-  /// 동행 요청을 수락/거절한다. 수락 시 만남 위치/시간은 필수다.
+  /// 동행 요청을 수락/거절한다.
+  ///
+  /// 수락 시 만남 장소는 좌표([meetingLat]/[meetingLng]) 또는 안내자 본인의
+  /// 동네 지식([meetingArchiveItemId]) 중 하나로 지정해야 한다.
   Future<void> respondToRequest({
     required String escortId,
     required bool accept,
     double? meetingLat,
     double? meetingLng,
+    String? meetingArchiveItemId,
     String? meetingTime,
   }) async {
     final callable = _fn.httpsCallable('respondToRequest');
     await callable.call<Map<String, dynamic>>({
       'escortId': escortId,
       'accept': accept,
-      if (accept) 'meetingLocation': {'lat': meetingLat, 'lng': meetingLng},
+      if (accept && meetingArchiveItemId != null)
+        'meetingArchiveItemId': meetingArchiveItemId,
+      if (accept && meetingArchiveItemId == null)
+        'meetingLocation': {'lat': meetingLat, 'lng': meetingLng},
       if (accept) 'meetingTime': meetingTime,
     });
   }

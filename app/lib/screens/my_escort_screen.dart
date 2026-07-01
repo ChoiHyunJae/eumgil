@@ -38,6 +38,9 @@ class _MyEscortScreenState extends State<MyEscortScreen> {
     _load();
   }
 
+  /// 이미 안내 다이얼로그를 보여준 escortId 집합(중복 알림 방지).
+  final Set<String> _notified = <String>{};
+
   Future<void> _load() async {
     setState(() {
       _loading = true;
@@ -50,6 +53,16 @@ class _MyEscortScreenState extends State<MyEscortScreen> {
         _escorts = escorts;
         _loading = false;
       });
+      // 승인(MeetingConfirmed)/거절(Rejected) 상태인 항목 중 아직 안내하지
+      // 않은 것만 다이얼로그로 알린다.
+      for (final escort in escorts) {
+        if ((escort.status == 'MeetingConfirmed' ||
+                escort.status == 'Rejected') &&
+            !_notified.contains(escort.escortId)) {
+          _notified.add(escort.escortId);
+          await _notifyIfNeeded(escort);
+        }
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -59,8 +72,78 @@ class _MyEscortScreenState extends State<MyEscortScreen> {
     }
   }
 
-  void _snack(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  void _snack(String message, {bool success = true}) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(message),
+      backgroundColor:
+          success ? const Color(0xFF1B8A6B) : Colors.red.shade700,
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    ));
+  }
+
+  /// 안내자 응답(수락/거절) 결과를 확인 다이얼로그로 안내한다.
+  /// 수락(MeetingConfirmed)이면 만남 시간/장소를 보여주고 확인을 요청하며,
+  /// 거절(Rejected)이면 거절 사실만 안내한다. 두 경우 모두 확인 후 목록을
+  /// 새로고침해 같은 안내가 중복 노출되지 않게 한다.
+  Future<void> _notifyIfNeeded(MyEscortSummary escort) async {
+    if (!_isTraveler(escort)) return; // 안내자 본인에게는 노출하지 않음
+
+    if (escort.status == 'MeetingConfirmed') {
+      final meeting = escort.meetingTime == null
+          ? '미정'
+          : _formatDateTime(escort.meetingTime!.toLocal());
+      final place = escort.meetingLocationLabel ?? '안내자가 지정한 장소';
+      await showDialog<void>(
+        context: context,
+        builder: (_) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Text('동행 요청을 승인했습니다'),
+          content: Text(
+            '안내자가 동행 요청을 승인했습니다.\n\n'
+            '만남 시간: $meeting\n'
+            '만남 장소: $place\n\n'
+            '이 시간과 장소가 괜찮으신가요?',
+            style: const TextStyle(height: 1.6),
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context),
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1B8A6B)),
+              child: const Text('확인했어요'),
+            ),
+          ],
+        ),
+      );
+    } else if (escort.status == 'Rejected') {
+      await showDialog<void>(
+        context: context,
+        builder: (_) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Text('동행 요청이 거절되었습니다'),
+          content: const Text(
+            '안내자가 이번 동행 요청을 거절했습니다.\n다른 안내자를 찾아보세요.',
+            style: TextStyle(height: 1.6),
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context),
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red.shade600),
+              child: const Text('확인했어요'),
+            ),
+          ],
+        ),
+      );
+    }
+  }
+
+  String _formatDateTime(DateTime dt) {
+    return '${dt.month}월 ${dt.day}일 ${dt.hour.toString().padLeft(2, '0')}:'
+        '${dt.minute.toString().padLeft(2, '0')}';
   }
 
   Future<void> _cancel(MyEscortSummary escort) async {
@@ -128,6 +211,7 @@ class _MyEscortScreenState extends State<MyEscortScreen> {
     final meeting = escort.meetingTime == null
         ? '미정'
         : escort.meetingTime!.toLocal().toString();
+    final isRejected = escort.status == 'Rejected';
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       child: Padding(
@@ -143,12 +227,15 @@ class _MyEscortScreenState extends State<MyEscortScreen> {
             Text('escortId: ${escort.escortId}'),
             Text('탐방자: ${escort.travelerId}'),
             Text('안내자: ${escort.guideId}'),
-            Text('만남 시간: $meeting'),
+            if (!isRejected) Text('만남 시간: $meeting'),
+            if (!isRejected && escort.meetingLocationLabel != null)
+              Text('만남 장소: ${escort.meetingLocationLabel}'),
             const SizedBox(height: 12),
-            Align(
-              alignment: Alignment.centerRight,
-              child: _buildActions(escort, processing),
-            ),
+            if (!isRejected)
+              Align(
+                alignment: Alignment.centerRight,
+                child: _buildActions(escort, processing),
+              ),
           ],
         ),
       ),

@@ -56,7 +56,7 @@ class _TravelerHomeScreenState extends State<TravelerHomeScreen> {
         index: _tabIndex,
         children: [
           const GuideSearchScreen(),
-          const ArchiveListScreen(),
+          const ArchiveListScreen(showRequestButton: true),
           MyEscortScreen(currentUserId: _uid),
         ],
       ),

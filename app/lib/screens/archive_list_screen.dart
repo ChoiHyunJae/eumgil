@@ -1,15 +1,27 @@
 import 'package:flutter/material.dart';
 
 import '../services/archive_service.dart';
+import '../services/matching_service.dart';
 
 /// 동네 지식 목록 조회 화면.
 ///
 /// 동 단위 드롭다운으로 지역을 선택해 해당 동의 동네 지식 목록을 조회한다.
 class ArchiveListScreen extends StatefulWidget {
-  const ArchiveListScreen({super.key, this.service});
+  const ArchiveListScreen({
+    super.key,
+    this.service,
+    this.matchingService,
+    this.showRequestButton = false,
+  });
 
   /// 테스트에서 가짜 구현을 주입하기 위한 선택적 의존성. null이면 기본 생성.
   final ArchiveService? service;
+
+  /// "이 곳 안내 요청하기" 버튼에서 쓸 매칭 서비스(테스트용 주입).
+  final MatchingService? matchingService;
+
+  /// true면 각 카드에 "이 곳 안내 요청하기" 버튼을 노출한다(탐방자 전용 화면에서 사용).
+  final bool showRequestButton;
 
   @override
   State<ArchiveListScreen> createState() => _ArchiveListScreenState();
@@ -17,6 +29,7 @@ class ArchiveListScreen extends StatefulWidget {
 
 class _ArchiveListScreenState extends State<ArchiveListScreen> {
   late final ArchiveService _service;
+  late final MatchingService _matchingService;
 
   String? _selectedDong;
   ArchiveCategory? _selectedCategory;
@@ -31,11 +44,78 @@ class _ArchiveListScreenState extends State<ArchiveListScreen> {
   /// 신고 처리 중인 itemId 집합(중복 클릭 방지).
   final Set<String> _reporting = <String>{};
 
+  /// 동행 요청 처리 중인 itemId 집합(중복 클릭 방지).
+  final Set<String> _requesting = <String>{};
+
   @override
   void initState() {
     super.initState();
     _service = widget.service ?? ArchiveService();
+    _matchingService = widget.matchingService ?? MatchingService();
     _loadDongs();
+  }
+
+  /// 이 동네 지식을 보고 작성 안내자에게 동행을 요청한다.
+  Future<void> _requestFromItem(ArchiveItemSummary item) async {
+    if (_requesting.contains(item.id)) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('안내 요청'),
+        content: const Text(
+          '이 곳을 직접 보고 설명을 듣고 싶으신가요?\n'
+          '이 동네 지식을 등록한 안내자에게 동행을 요청합니다.',
+          style: TextStyle(height: 1.6),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('취소'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style:
+                ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2979FF)),
+            child: const Text('요청하기'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _requesting.add(item.id));
+    try {
+      await _matchingService.requestEscort(
+        guideId: item.authorId,
+        archiveItemId: item.id,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('안내자에게 동행을 요청했습니다.'),
+          backgroundColor: const Color(0xFF1B8A6B),
+          behavior: SnackBarBehavior.floating,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('요청에 실패했습니다: $e'),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _requesting.remove(item.id));
+    }
   }
 
   Future<void> _loadDongs() async {
@@ -194,34 +274,65 @@ class _ArchiveListScreenState extends State<ArchiveListScreen> {
 
   Widget _buildItem(ArchiveItemSummary item) {
     final reporting = _reporting.contains(item.id);
+    final requesting = _requesting.contains(item.id);
     final profileLine = _authorProfileLine(item);
     final subtitleLines = <Widget>[
       if (item.dongLabel != null) Text(item.dongLabel!),
       if (profileLine != null)
         Text(profileLine, style: const TextStyle(fontSize: 12)),
     ];
-    return ListTile(
-      leading: Chip(label: Text(item.category.label)),
-      title: Text(item.body),
-      subtitle: subtitleLines.isEmpty
-          ? null
-          : Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: subtitleLines,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ListTile(
+          leading: Chip(label: Text(item.category.label)),
+          title: Text(item.body),
+          subtitle: subtitleLines.isEmpty
+              ? null
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: subtitleLines,
+                ),
+          isThreeLine: subtitleLines.length > 1,
+          trailing: reporting
+              ? const SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : IconButton(
+                  icon: const Icon(Icons.outlined_flag),
+                  tooltip: '신고',
+                  onPressed: () => _onReportPressed(item),
+                ),
+        ),
+        if (widget.showRequestButton)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: requesting ? null : () => _requestFromItem(item),
+                icon: requesting
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.directions_walk, size: 18),
+                label: const Text('이 곳 안내 요청하기'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFF2979FF),
+                  side: const BorderSide(color: Color(0xFF2979FF)),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
             ),
-      isThreeLine: subtitleLines.length > 1,
-      trailing: reporting
-          ? const SizedBox(
-              width: 24,
-              height: 24,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          : IconButton(
-              icon: const Icon(Icons.outlined_flag),
-              tooltip: '신고',
-              onPressed: () => _onReportPressed(item),
-            ),
+          ),
+      ],
     );
   }
 

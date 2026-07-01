@@ -17,6 +17,8 @@ import {
   GetAvailableDongsOutput,
   ListArchiveItemsByDongInput,
   ListArchiveItemsByDongOutput,
+  ListMyArchiveItemsInput,
+  ListMyArchiveItemsOutput,
   ListNearbyArchiveItemsInput,
   ListNearbyArchiveItemsOutput,
   ReportArchiveItemInput,
@@ -578,4 +580,30 @@ export const getAvailableDongs = onCall<
     throw new HttpsError("unauthenticated", "로그인이 필요합니다.");
   }
   return Promise.resolve({dongs: [...AVAILABLE_DONGS]});
+});
+
+/**
+ * 호출자 본인이 등록한 동네 지식 목록을 조회한다(hidden 여부 무관, 자기 관리용).
+ * 안내자가 동행 만남 장소를 본인 동네 지식 중에서 선택할 때 사용한다.
+ */
+export const listMyArchiveItems = onCall<
+  ListMyArchiveItemsInput,
+  Promise<ListMyArchiveItemsOutput>
+>(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "로그인이 필요합니다.");
+  }
+
+  const uid = request.auth.uid;
+  const snap = await admin
+    .firestore()
+    .collection("archiveItems")
+    .where("authorId", "==", uid)
+    .get();
+
+  const items: ArchiveItem[] = snap.docs
+    .map((doc) => ({id: doc.id, ...(doc.data() as Omit<ArchiveItem, "id">)}))
+    .sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis());
+
+  return {items};
 });

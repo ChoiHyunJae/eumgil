@@ -518,6 +518,68 @@ describe("matching module", () => {
     ).rejects.toThrow();
   });
 
+  it("동네 지식을 보고 요청하면 requestedArchiveItemId가 저장된다", async () => {
+    await seedGuide("re-item-guide");
+    const itemRef = await db.collection("archiveItems").add({
+      authorId: "re-item-guide",
+      category: "PLACE",
+      voiceTranscript: "제가 자주 가는 카페입니다.",
+      aiSummary: null,
+      confirmedByAuthor: true,
+      photoUrls: [],
+      exactLocation: new GeoPoint(37.5665, 126.978),
+      dongLabel: "종로구 광화문·세종로 인근",
+      visibilityRadiusM: 3000,
+      published: true,
+      reportCount: 0,
+      hidden: false,
+      createdAt: Timestamp.now(),
+      updatedAt: Timestamp.now(),
+    });
+
+    const result = await runCallable<RequestEscortOutput>(
+      requestEscort,
+      buildRequest("re-item-traveler", {
+        guideId: "re-item-guide",
+        archiveItemId: itemRef.id,
+      })
+    );
+    const data = (await db.collection("escorts").doc(result.escortId).get())
+      .data();
+    expect(data?.requestedArchiveItemId).toBe(itemRef.id);
+  });
+
+  it("다른 안내자의 동네 지식으로 요청하면 거부된다", async () => {
+    await seedGuide("re-item-guideA");
+    await seedGuide("re-item-guideB");
+    const itemRef = await db.collection("archiveItems").add({
+      authorId: "re-item-guideB",
+      category: "PLACE",
+      voiceTranscript: "제가 자주 가는 카페입니다.",
+      aiSummary: null,
+      confirmedByAuthor: true,
+      photoUrls: [],
+      exactLocation: new GeoPoint(37.5665, 126.978),
+      dongLabel: "종로구 광화문·세종로 인근",
+      visibilityRadiusM: 3000,
+      published: true,
+      reportCount: 0,
+      hidden: false,
+      createdAt: Timestamp.now(),
+      updatedAt: Timestamp.now(),
+    });
+
+    await expect(
+      runCallable<RequestEscortOutput>(
+        requestEscort,
+        buildRequest("re-item-traveler2", {
+          guideId: "re-item-guideA", // itemRef의 작성자(guideB)와 다름
+          archiveItemId: itemRef.id,
+        })
+      )
+    ).rejects.toMatchObject({code: "invalid-argument"});
+  });
+
   // ---- respondToRequest ----
 
   it("수락 시 만남 정보와 함께 MeetingConfirmed로 전환된다", async () => {
@@ -544,6 +606,85 @@ describe("matching module", () => {
     expect(data?.meetingLocation).toBeInstanceOf(GeoPoint);
     expect(data?.meetingTime).not.toBeNull();
     expect(data?.respondedAt).not.toBeNull();
+  });
+
+  it("meetingArchiveItemId로 수락하면 본인 동네 지식 위치가 만남 장소가 된다", async () => {
+    const escortId = await seedEscort({
+      guideId: "rr-item-guide",
+      travelerId: "rr-item-traveler",
+      status: "Requested",
+      requestExpiresAt: future(),
+    });
+    const itemRef = await db.collection("archiveItems").add({
+      authorId: "rr-item-guide",
+      category: "PLACE",
+      voiceTranscript: "제가 자주 가는 카페입니다.",
+      aiSummary: null,
+      confirmedByAuthor: true,
+      photoUrls: [],
+      exactLocation: new GeoPoint(37.5665, 126.978),
+      dongLabel: "종로구 광화문·세종로 인근",
+      visibilityRadiusM: 3000,
+      published: true,
+      reportCount: 0,
+      hidden: false,
+      createdAt: Timestamp.now(),
+      updatedAt: Timestamp.now(),
+    });
+
+    const result = await runCallable<RespondToRequestOutput>(
+      respondToRequest,
+      buildRequest("rr-item-guide", {
+        escortId,
+        accept: true,
+        meetingArchiveItemId: itemRef.id,
+        meetingTime: "2026-07-01T10:00:00.000Z",
+      })
+    );
+    expect(result.status).toBe("MeetingConfirmed");
+
+    const data = (await db.collection("escorts").doc(escortId).get()).data();
+    expect(data?.meetingLocation).toBeInstanceOf(GeoPoint);
+    expect((data?.meetingLocation as GeoPoint).latitude).toBeCloseTo(37.5665);
+    expect(data?.meetingLocationLabel).toBe("종로구 광화문·세종로 인근");
+  });
+
+  it("타인의 동네 지식으로 만남 장소를 지정하면 거부된다", async () => {
+    await seedGuide("rr-item-other");
+    const escortId = await seedEscort({
+      guideId: "rr-item-guide2",
+      travelerId: "rr-item-traveler2",
+      status: "Requested",
+      requestExpiresAt: future(),
+    });
+    const itemRef = await db.collection("archiveItems").add({
+      authorId: "rr-item-other", // rr-item-guide2가 아닌 다른 사람의 글
+      category: "PLACE",
+      voiceTranscript: "제가 자주 가는 카페입니다.",
+      aiSummary: null,
+      confirmedByAuthor: true,
+      photoUrls: [],
+      exactLocation: new GeoPoint(37.5665, 126.978),
+      dongLabel: "종로구 광화문·세종로 인근",
+      visibilityRadiusM: 3000,
+      published: true,
+      reportCount: 0,
+      hidden: false,
+      createdAt: Timestamp.now(),
+      updatedAt: Timestamp.now(),
+    });
+
+    await expect(
+      runCallable<RespondToRequestOutput>(
+        respondToRequest,
+        buildRequest("rr-item-guide2", {
+          escortId,
+          accept: true,
+          meetingArchiveItemId: itemRef.id,
+          meetingTime: "2026-07-01T10:00:00.000Z",
+        })
+      )
+    ).rejects.toMatchObject({code: "invalid-argument"});
   });
 
   it("거절 시 Rejected로 전환된다", async () => {

@@ -35,6 +35,11 @@ export interface SearchGuidesOutput {
  */
 export interface RequestEscortInput {
   guideId: string;
+  /**
+   * 탐방자가 해당 안내자가 등록한 특정 동네 지식을 보고 요청하는 경우 그 문서 id.
+   * archiveItems.authorId === guideId 인지 서버가 검증한다.
+   */
+  archiveItemId?: string;
 }
 export interface RequestEscortOutput {
   escortId: string;
@@ -49,8 +54,17 @@ export interface RequestEscortOutput {
 export interface RespondToRequestInput {
   escortId: string;
   accept: boolean;
-  /** accept=true일 때 필수: US#26 만남 장소·시간 확정. */
+  /**
+   * accept=true일 때 필수(meetingArchiveItemId를 주지 않는 경우): US#26 만남
+   * 장소·시간 확정. meetingLocation 또는 meetingArchiveItemId 중 하나 제공.
+   */
   meetingLocation?: {lat: number; lng: number};
+  /**
+   * accept=true일 때, 좌표 대신 안내자 본인의 동네 지식 문서 id로 만남 장소를
+   * 지정할 수 있다. 서버가 해당 동네 지식의 exactLocation을 만남 장소로 사용하고
+   * 제목을 meetingLocationLabel에 저장한다. authorId가 호출자와 다르면 거부.
+   */
+  meetingArchiveItemId?: string;
   meetingTime?: string;
 }
 export interface RespondToRequestOutput {
@@ -67,6 +81,8 @@ export interface ReceivedEscortRequestSummary {
   travelerId: string;
   requestedAt: string;
   requestExpiresAt: string;
+  /** 탐방자가 특정 동네 지식을 보고 요청한 경우 그 문서 id. 없으면 null. */
+  requestedArchiveItemId: string | null;
 }
 
 /**
