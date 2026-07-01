@@ -127,11 +127,18 @@ class _ReceivedEscortRequestsScreenState
   Future<void> _accept(ReceivedEscortRequestSummary req) async {
     if (_processing.contains(req.escortId)) return;
 
+    // 탐방자가 재제안(counterProposal)한 시간이 있으면 그걸 우선하고,
+    // 없으면 최초 요청 시 제안한 시간(proposedMeetingTime)을 사용한다.
+    final initialTime =
+        req.counterProposal?.meetingTime ?? req.proposedMeetingTime;
     final input = await showModalBottomSheet<_MeetingInput>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => _MeetingPickerSheet(archiveService: _archiveService),
+      builder: (_) => _MeetingPickerSheet(
+        archiveService: _archiveService,
+        initialTime: initialTime,
+      ),
     );
     if (input == null || !mounted) return;
 
@@ -535,9 +542,12 @@ class _MeetingInput {
 /// 고령 사용자를 고려해 텍스트 직접 입력 없이 날짜/시간 선택기와 카드 목록
 /// 클릭만으로 완료할 수 있게 구성한다.
 class _MeetingPickerSheet extends StatefulWidget {
-  const _MeetingPickerSheet({required this.archiveService});
+  const _MeetingPickerSheet({required this.archiveService, this.initialTime});
 
   final ArchiveService archiveService;
+
+  /// 탐방자가 이미 제안한 희망 만남 시간(있으면 날짜/시간을 미리 채운다).
+  final DateTime? initialTime;
 
   @override
   State<_MeetingPickerSheet> createState() => _MeetingPickerSheetState();
@@ -559,6 +569,14 @@ class _MeetingPickerSheetState extends State<_MeetingPickerSheet> {
   @override
   void initState() {
     super.initState();
+    // 탐방자가 미리 제안한 시간이 있으면 날짜/시간을 미리 채워, 안내자가
+    // 같은 정보를 다시 입력하지 않아도 되게 한다.
+    final initial = widget.initialTime;
+    if (initial != null) {
+      final local = initial.toLocal();
+      _date = DateTime(local.year, local.month, local.day);
+      _time = TimeOfDay(hour: local.hour, minute: local.minute);
+    }
     _loadMyItems();
   }
 

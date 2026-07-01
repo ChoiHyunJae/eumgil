@@ -1081,6 +1081,93 @@ describe("matching module", () => {
     ).rejects.toMatchObject({code: "invalid-argument"});
   });
 
+  it("버그 회귀: 동네 지식 기반 요청은 장소 미지정 재제안이 원 동네 지식 " +
+    "위치로 성공한다", async () => {
+    await seedGuide("cp-item2-guide");
+    const itemRef = await db.collection("archiveItems").add({
+      authorId: "cp-item2-guide",
+      category: "PLACE",
+      voiceTranscript: "제가 자주 가는 카페입니다.",
+      aiSummary: null,
+      confirmedByAuthor: true,
+      photoUrls: [],
+      exactLocation: new GeoPoint(37.5665, 126.978),
+      dongLabel: "종로구 광화문·세종로 인근",
+      visibilityRadiusM: 3000,
+      published: true,
+      reportCount: 0,
+      hidden: false,
+      createdAt: Timestamp.now(),
+      updatedAt: Timestamp.now(),
+    });
+    const requestResult = await runCallable<RequestEscortOutput>(
+      requestEscort,
+      buildRequest("cp-item2-traveler", {
+        guideId: "cp-item2-guide",
+        archiveItemId: itemRef.id,
+      })
+    );
+
+    // 장소를 지정하지 않고 시간만 재제안 — 예전에는 invalid-argument로 실패했다.
+    const result = await runCallable<ProposeCounterOfferOutput>(
+      proposeCounterOffer,
+      buildRequest("cp-item2-guide", {
+        escortId: requestResult.escortId,
+        meetingTime: "2026-08-01T10:00:00.000Z",
+      })
+    );
+    expect(result.counterProposal.meetingLocation.lat).toBeCloseTo(37.5665);
+    expect(result.counterProposal.meetingLocationLabel).toBe(
+      "종로구 광화문·세종로 인근"
+    );
+  });
+
+  it("버그 회귀: 직전 재제안이 있으면 다음 재제안도 장소 미지정으로 " +
+    "성공한다", async () => {
+    const escortId = await seedEscort({
+      guideId: "cp-chain-guide",
+      travelerId: "cp-chain-traveler",
+      status: "Requested",
+      requestExpiresAt: future(),
+    });
+    // 1차 재제안: 장소를 명시.
+    await runCallable<ProposeCounterOfferOutput>(
+      proposeCounterOffer,
+      buildRequest("cp-chain-guide", {
+        escortId,
+        meetingTime: "2026-08-01T10:00:00.000Z",
+        meetingLocation: {lat: 37.5665, lng: 126.978},
+      })
+    );
+    // 2차 재제안(상대측): 장소를 지정하지 않아도 1차 제안 장소를 이어받는다.
+    const result = await runCallable<ProposeCounterOfferOutput>(
+      proposeCounterOffer,
+      buildRequest("cp-chain-traveler", {
+        escortId,
+        meetingTime: "2026-08-02T11:00:00.000Z",
+      })
+    );
+    expect(result.counterProposal.meetingLocation.lat).toBeCloseTo(37.5665);
+  });
+
+  it("장소 정보가 전혀 없는 요청에 장소 미지정 재제안은 거부된다", async () => {
+    const escortId = await seedEscort({
+      guideId: "cp-noloc-guide",
+      travelerId: "cp-noloc-traveler",
+      status: "Requested",
+      requestExpiresAt: future(),
+    });
+    await expect(
+      runCallable<ProposeCounterOfferOutput>(
+        proposeCounterOffer,
+        buildRequest("cp-noloc-guide", {
+          escortId,
+          meetingTime: "2026-08-01T10:00:00.000Z",
+        })
+      )
+    ).rejects.toMatchObject({code: "invalid-argument"});
+  });
+
   it("상대방이 재제안을 수락하면 MeetingConfirmed로 전환된다", async () => {
     const escortId = await seedEscort({
       guideId: "co-guide",

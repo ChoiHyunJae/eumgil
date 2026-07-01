@@ -692,6 +692,19 @@ class _CounterOfferTimeSheetState extends State<_CounterOfferTimeSheet> {
   DateTime? _date;
   TimeOfDay? _time;
 
+  @override
+  void initState() {
+    super.initState();
+    // 기존 만남 시간(승인된 시간)이 있으면 날짜/시간을 미리 채워, 시간만
+    // 조정하고 싶은 사용자가 처음부터 다시 선택하지 않아도 되게 한다.
+    final base = widget.initialTime;
+    if (base != null) {
+      final local = base.toLocal();
+      _date = DateTime(local.year, local.month, local.day);
+      _time = TimeOfDay(hour: local.hour, minute: local.minute);
+    }
+  }
+
   Future<void> _pickDate() async {
     final now = DateTime.now();
     final base = widget.initialTime ?? now;
